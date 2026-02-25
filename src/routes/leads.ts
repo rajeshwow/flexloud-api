@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { requireAuth } from "../auth/requireAuth";
 import { pool } from "../db/pool";
 import { withTx } from "../db/tx";
 import { hasRole } from "../rbac/roles";
 import { resolveTenant } from "../tenancy/tenantContext";
 
+import { requireAuth } from "../common/auth";
 import { getLead, listLeadsForOwnerOrTeam } from "../domain/leads/leadsRepo";
 import {
   addLeadActivity,

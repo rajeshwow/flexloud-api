@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { requireAuth } from "../../common/auth";
 import { getPagination } from "../../common/pagination";
 import { requireRoles } from "../../common/rbac";
 import { getTenantId } from "../../common/tenant";
@@ -73,13 +74,9 @@ const UpdateStatusSchema = z.object({
 // ---------- Router ----------
 export function usersRouter() {
   const router = Router();
+  router.use(requireAuth);
 
-  /**
-   * ✅ LIST users (ADMIN/MANAGER)
-   * GET /v1/users?search=&role=&active=
-   */
-  //   router.get("/", requireRoles(["ADMIN", "MANAGER"]), async (req: any, res) => {
-  router.get("/", async (req, res) => {
+  router.get("/", requireRoles(["ADMIN", "MANAGER"]), async (req: any, res) => {
     const tenantId = getTenantId(req);
 
     const search = (req.query.search as string | undefined)?.trim();
@@ -142,10 +139,6 @@ export function usersRouter() {
     });
   });
 
-  /**
-   * ✅ GET user by id (ADMIN/MANAGER)
-   * GET /v1/users/:id
-   */
   router.get(
     "/:id",
     requireRoles(["ADMIN", "MANAGER"]),
@@ -167,15 +160,7 @@ export function usersRouter() {
     },
   );
 
-  /**
-   * ✅ CREATE user (ADMIN)
-   * POST /v1/users
-   * Body: { email, name, role, ... }
-   *
-   * IMPORTANT: tenant_id is ALWAYS from server context.
-   */
-  //   router.post("/", requireRoles(["ADMIN"]), async (req: any, res) => {
-  router.post("/", async (req, res) => {
+  router.post("/", requireRoles(["ADMIN"]), async (req: any, res) => {
     const tenantId = getTenantId(req);
     const body = CreateUserSchema.parse(req.body);
 
@@ -229,12 +214,7 @@ export function usersRouter() {
     res.status(201).json({ data: rows[0] });
   });
 
-  /**
-   * ✅ UPDATE user profile (ADMIN) - safe patch
-   * PATCH /v1/users/:id
-   */
-  //   router.patch("/:id", requireRoles(["ADMIN"]), async (req: any, res) => {
-  router.patch("/:id", async (req, res) => {
+  router.patch("/:id", requireRoles(["ADMIN"]), async (req: any, res) => {
     const tenantId = getTenantId(req);
     const userId = req.params.id;
     const body = UpdateUserSchema.parse(req.body);
@@ -278,12 +258,7 @@ export function usersRouter() {
     res.json({ data: rows[0] });
   });
 
-  /**
-   * ✅ UPDATE role (ADMIN)
-   * PATCH /v1/users/:id/role
-   */
-  //   router.patch("/:id/role", requireRoles(["ADMIN"]), async (req: any, res) => {
-  router.patch("/:id/role", async (req, res) => {
+  router.patch("/:id/role", requireRoles(["ADMIN"]), async (req: any, res) => {
     const tenantId = getTenantId(req);
     const userId = req.params.id;
     const body = UpdateRoleSchema.parse(req.body);
@@ -302,37 +277,29 @@ export function usersRouter() {
     res.json({ data: rows[0] });
   });
 
-  /**
-   * ✅ Activate/Deactivate (ADMIN)
-   * PATCH /v1/users/:id/status
-   */
-  //   router.patch(
-  //     "/:id/status",
-  //     requireRoles(["ADMIN"]),
-  //     async (req: any, res) => {
-  router.patch("/:id/status", async (req, res) => {
-    const tenantId = getTenantId(req);
-    const userId = req.params.id;
-    const body = UpdateStatusSchema.parse(req.body);
+  router.patch(
+    "/:id/status",
+    requireRoles(["ADMIN"]),
+    async (req: any, res) => {
+      const tenantId = getTenantId(req);
+      const userId = req.params.id;
+      const body = UpdateStatusSchema.parse(req.body);
 
-    const { rows } = await pool.query(
-      `
+      const { rows } = await pool.query(
+        `
       UPDATE users
       SET is_active = $1
       WHERE id = $2 AND tenant_id = $3
       RETURNING id, email, name, role, is_active, updated_at
       `,
-      [body.is_active, userId, tenantId],
-    );
+        [body.is_active, userId, tenantId],
+      );
 
-    if (!rows[0]) return res.status(404).json({ message: "User not found" });
-    res.json({ data: rows[0] });
-  });
+      if (!rows[0]) return res.status(404).json({ message: "User not found" });
+      res.json({ data: rows[0] });
+    },
+  );
 
-  /**
-   * ✅ Soft delete style (ADMIN): same as deactivate
-   * DELETE /v1/users/:id
-   */
   router.delete("/:id", requireRoles(["ADMIN"]), async (req: any, res) => {
     const tenantId = getTenantId(req);
     const userId = req.params.id;

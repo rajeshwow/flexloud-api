@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth } from "../auth/requireAuth";
+import { requireAuth } from "../common/auth";
 import { resolveTenant } from "../tenancy/tenantContext";
 
 export function meRouter() {

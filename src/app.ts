@@ -5,6 +5,8 @@ import { env } from "./config/env";
 import { errorHandler, notFoundHandler } from "./observability/errors";
 import { requestLoggingMiddleware } from "./observability/requestLogging";
 
+import { attachUserContext } from "./auth/attachUserContext";
+import { requireAuth } from "./common/auth";
 import tenantsRoutes from "./modules/admin/tenants.routes";
 import { usersRouter } from "./modules/users/users.routes";
 import { clientLogsRouter } from "./routes/clientLogs";
@@ -32,6 +34,10 @@ export function createApp() {
   );
 
   app.use(requestLoggingMiddleware());
+
+  // protect all /v1 routes
+  app.use("/v1", requireAuth);
+  app.use("/v1", attachUserContext);
 
   app.use("/health", healthRouter());
   app.use("/ready", healthRouter());
