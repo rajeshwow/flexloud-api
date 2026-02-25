@@ -6,6 +6,7 @@ import { errorHandler, notFoundHandler } from "./observability/errors";
 import { requestLoggingMiddleware } from "./observability/requestLogging";
 
 import tenantsRoutes from "./modules/admin/tenants.routes";
+import { usersRouter } from "./modules/users/users.routes";
 import { clientLogsRouter } from "./routes/clientLogs";
 import { healthRouter } from "./routes/health";
 import { leadsRouter } from "./routes/leads";
@@ -40,6 +41,7 @@ export function createApp() {
   app.use("/v1/notifications", notificationsRouter());
   app.use("/v1/client-logs", clientLogsRouter()); // optional
   app.use(tenantsRoutes);
+  app.use("/v1/users", usersRouter());
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../auth/requireAuth";
-import { db } from "../db/pool";
+import { pool } from "../db/pool";
 import { withTx } from "../db/tx";
 import { hasRole } from "../rbac/roles";
 import { resolveTenant } from "../tenancy/tenantContext";
@@ -28,7 +28,7 @@ export function leadsRouter() {
     const userId = req.user!.sub;
     const canSeeTeam = hasRole(roles, "MANAGER") || hasRole(roles, "ADMIN");
 
-    const rows = await db.connect().then(async (c) => {
+    const rows = await pool.connect().then(async (c) => {
       try {
         return await listLeadsForOwnerOrTeam(c, tenantId, userId, canSeeTeam);
       } finally {
@@ -44,7 +44,7 @@ export function leadsRouter() {
     const userId = req.user!.sub;
     const leadId = req.params.id;
 
-    const lead = await db.connect().then(async (c) => {
+    const lead = await pool.connect().then(async (c) => {
       try {
         return await getLead(c, tenantId, leadId);
       } finally {
