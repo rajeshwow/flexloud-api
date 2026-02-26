@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../../db/pool";
@@ -61,19 +62,24 @@ export async function bootstrapTenant(
     //    If user exists, keep it.
     const adminUserId = randomUUID();
 
+    const tempPassword = "Pass@1234"; // or generate random
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+
     const userInsert = await client.query(
       `
-      INSERT INTO users (id, tenant_id, email, name, role, identity_sub)
-      VALUES ($1, $2, $3, $4, 'ADMIN', $5)
-      ON CONFLICT (tenant_id, email)
-      DO UPDATE SET name = EXCLUDED.name
-      RETURNING id, email, name, role
-      `,
+  INSERT INTO users (id, tenant_id, email, name, role, username, password_hash, is_active, identity_sub)
+  VALUES ($1, $2, $3, $4, 'ADMIN', $5, $6, TRUE, $7)
+  ON CONFLICT (tenant_id, email)
+  DO UPDATE SET name = EXCLUDED.name
+  RETURNING id, email, name, role
+  `,
       [
         adminUserId,
         data.tenantId,
         data.adminEmail,
         data.adminName,
+        "admin", // username (change if needed)
+        passwordHash,
         data.adminSub ?? null,
       ],
     );

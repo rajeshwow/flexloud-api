@@ -21,11 +21,19 @@ const CreateTenantSchema = z.object({
     .regex(/^[a-z0-9-]+$/, "slug must be lowercase, alphanumeric, hyphen"),
 });
 
-router.post("/v1/admin/tenants", requirePlatformAdmin, async (req, res) => {
-  const body = CreateTenantSchema.parse(req.body);
-  const tenant = await createTenant(body);
-  return res.status(201).json({ data: tenant });
-});
+router.post(
+  "/v1/admin/tenants",
+  requirePlatformAdmin,
+  async (req, res, next) => {
+    try {
+      const body = CreateTenantSchema.parse(req.body);
+      const tenant = await createTenant(body);
+      return res.status(201).json({ data: tenant });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 const BootstrapSchema = z.object({
   adminEmail: z.string().email(),
@@ -37,18 +45,22 @@ const BootstrapSchema = z.object({
 router.post(
   "/v1/admin/tenants/:tenantId/bootstrap",
   requirePlatformAdmin,
-  async (req, res) => {
-    const tenantId = req.params.tenantId;
-    const body = BootstrapSchema.parse(req.body);
+  async (req, res, next) => {
+    try {
+      const tenantId = req.params.tenantId;
+      const body = BootstrapSchema.parse(req.body);
 
-    const result = await bootstrapTenant({
-      tenantId,
-      adminEmail: body.adminEmail,
-      adminName: body.adminName,
-      adminSub: body.adminSub,
-    });
+      const result = await bootstrapTenant({
+        tenantId,
+        adminEmail: body.adminEmail,
+        adminName: body.adminName,
+        adminSub: body.adminSub,
+      });
 
-    return res.status(200).json({ data: result });
+      return res.status(200).json({ data: result });
+    } catch (err) {
+      next(err);
+    }
   },
 );
 

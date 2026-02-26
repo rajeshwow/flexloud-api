@@ -30,7 +30,7 @@ export const authService = {
       SELECT id, tenant_id, email, username, role, password_hash, name
       FROM users
       WHERE tenant_id = $1
-        AND (username = $2 OR email = $2)
+        AND (lower(username) = lower($2) OR lower(email) = lower($2))
       LIMIT 1
       `,
       [tenantId, identifier],

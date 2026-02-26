@@ -6,6 +6,7 @@ import { errorHandler, notFoundHandler } from "./observability/errors";
 import { requestLoggingMiddleware } from "./observability/requestLogging";
 
 import { attachUserContext } from "./auth/attachUserContext";
+import { authRouter } from "./auth/auth.routes";
 import { requireAuth } from "./common/auth";
 import tenantsRoutes from "./modules/admin/tenants.routes";
 import { usersRouter } from "./modules/users/users.routes";
@@ -34,6 +35,7 @@ export function createApp() {
   );
 
   app.use(requestLoggingMiddleware());
+  app.use("/v1/auth", authRouter);
 
   // protect all /v1 routes
   app.use("/v1", requireAuth);

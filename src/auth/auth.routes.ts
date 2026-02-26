@@ -17,7 +17,7 @@ authRouter.post("/login", async (req, res, next) => {
 
     const result = await authService.login({
       tenantId,
-      identifier: body.identifier,
+      identifier: body.identifier.trim().toLowerCase(),
       password: body.password,
       ip: req.ip,
       userAgent: req.headers["user-agent"] || "",
