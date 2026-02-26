@@ -1,10 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAuth } from "../../common/auth";
 import { getPagination } from "../../common/pagination";
 import { requireRoles } from "../../common/rbac";
 import { getTenantId } from "../../common/tenant";
-import { pool } from "../../db/pool";
+import { usersService } from "./users.service";
 
 // ---------- Validators ----------
 const RoleEnum = z.enum(["ADMIN", "MANAGER", "AGENT"]);
@@ -25,11 +24,14 @@ const CreateUserSchema = z.object({
   department: z.string().optional(),
   employee_code: z.string().optional(),
 
+  tempPassword: z.string().min(6).optional(),
   metadata: z.record(z.any()).optional(),
+
+  // if you want username later:
+  // username: z.string().min(3).optional(),
 });
 
 const UpdateUserSchema = z.object({
-  // you can update these
   name: z.string().min(2).optional(),
   display_name: z.string().optional(),
   first_name: z.string().optional(),
@@ -74,249 +76,186 @@ const UpdateStatusSchema = z.object({
 // ---------- Router ----------
 export function usersRouter() {
   const router = Router();
-  router.use(requireAuth);
 
-  router.get("/", requireRoles(["ADMIN", "MANAGER"]), async (req: any, res) => {
-    const tenantId = getTenantId(req);
+  router.get(
+    "/",
+    requireRoles(["ADMIN", "MANAGER"]),
+    async (req: any, res, next) => {
+      try {
+        const tenantId = getTenantId(req);
 
-    const search = (req.query.search as string | undefined)?.trim();
-    const role = (req.query.role as string | undefined)?.trim();
-    const active = req.query.active as string | undefined;
+        const search = (req.query.search as string | undefined)?.trim();
+        const role = (req.query.role as string | undefined)?.trim();
+        const active = req.query.active as string | undefined;
 
-    const where: string[] = ["tenant_id = $1"];
-    const params: any[] = [tenantId];
-    let i = 2;
+        const { page, limit, offset } = getPagination(req.query);
 
-    if (search) {
-      where.push(`(email ILIKE $${i} OR name ILIKE $${i})`);
-      params.push(`%${search}%`);
-      i++;
-    }
+        const { rows, total } = await usersService.listUsers({
+          tenantId,
+          search,
+          role,
+          active: active as any,
+          limit,
+          offset,
+        });
 
-    if (role) {
-      where.push(`role = $${i}`);
-      params.push(role);
-      i++;
-    }
-
-    if (active === "true" || active === "false") {
-      where.push(`is_active = $${i}`);
-      params.push(active === "true");
-      i++;
-    }
-
-    const { page, limit, offset } = getPagination(req.query);
-
-    // total count
-    const countQ = `SELECT COUNT(1)::int AS total FROM users WHERE ${where.join(" AND ")}`;
-    const totalRes = await pool.query(countQ, params);
-    const total = totalRes.rows[0]?.total ?? 0;
-
-    // data
-    const dataQ = `
-    SELECT id, email, name, role, is_active,
-           phone_country_code, phone, city, state, country,
-           designation, department, employee_code,
-           created_at, updated_at
-    FROM users
-    WHERE ${where.join(" AND ")}
-    ORDER BY created_at DESC
-    LIMIT $${i} OFFSET $${i + 1}
-  `;
-    const dataParams = [...params, limit, offset];
-    const { rows } = await pool.query(dataQ, dataParams);
-
-    return res.json({
-      data: rows,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1,
-      },
-    });
-  });
+        return res.json({
+          data: rows,
+          meta: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+            hasNext: page * limit < total,
+            hasPrev: page > 1,
+          },
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   router.get(
     "/:id",
     requireRoles(["ADMIN", "MANAGER"]),
-    async (req: any, res) => {
-      const tenantId = getTenantId(req);
-      const userId = req.params.id;
+    async (req: any, res, next) => {
+      try {
+        const tenantId = getTenantId(req);
+        const userId = req.params.id;
 
-      const { rows } = await pool.query(
-        `
-      SELECT *
-      FROM users
-      WHERE id = $1 AND tenant_id = $2
-      `,
-        [userId, tenantId],
-      );
+        const user = await usersService.getUserById(tenantId, userId);
+        if (!user) return res.status(404).json({ message: "User not found" });
 
-      if (!rows[0]) return res.status(404).json({ message: "User not found" });
-      res.json({ data: rows[0] });
+        res.json({ data: user });
+      } catch (err) {
+        next(err);
+      }
     },
   );
 
-  router.post("/", requireRoles(["ADMIN"]), async (req: any, res) => {
-    const tenantId = getTenantId(req);
-    const body = CreateUserSchema.parse(req.body);
+  router.post("/", requireRoles(["ADMIN"]), async (req: any, res, next) => {
+    try {
+      const tenantId = getTenantId(req);
+      const body = CreateUserSchema.parse(req.body);
 
-    const q = `
-      INSERT INTO users (
-        id, tenant_id, email, name, role, is_active,
-        phone_country_code, phone, city, state, country, postal_code,
-        designation, department, employee_code,
-        metadata
-      )
-      VALUES (
-        gen_random_uuid(), $1, $2, $3, $4, true,
-        $5, $6, $7, $8, $9, $10,
-        $11, $12, $13,
-        COALESCE($14::jsonb, '{}'::jsonb)
-      )
-      ON CONFLICT (tenant_id, email)
-      DO UPDATE SET
-        name = EXCLUDED.name,
-        role = EXCLUDED.role,
-        phone_country_code = COALESCE(EXCLUDED.phone_country_code, users.phone_country_code),
-        phone = COALESCE(EXCLUDED.phone, users.phone),
-        city = COALESCE(EXCLUDED.city, users.city),
-        state = COALESCE(EXCLUDED.state, users.state),
-        country = COALESCE(EXCLUDED.country, users.country),
-        postal_code = COALESCE(EXCLUDED.postal_code, users.postal_code),
-        designation = COALESCE(EXCLUDED.designation, users.designation),
-        department = COALESCE(EXCLUDED.department, users.department),
-        employee_code = COALESCE(EXCLUDED.employee_code, users.employee_code),
-        metadata = users.metadata || EXCLUDED.metadata
-      RETURNING id, email, name, role, is_active, created_at, updated_at
-    `;
+      const { user, tempPassword } = await usersService.createUser({
+        tenantId,
+        email: body.email,
+        name: body.name,
+        role: body.role,
 
-    const { rows } = await pool.query(q, [
-      tenantId,
-      body.email,
-      body.name,
-      body.role,
-      body.phone_country_code ?? null,
-      body.phone ?? null,
-      body.city ?? null,
-      body.state ?? null,
-      body.country ?? null,
-      body.postal_code ?? null,
-      body.designation ?? null,
-      body.department ?? null,
-      body.employee_code ?? null,
-      body.metadata ? JSON.stringify(body.metadata) : null,
-    ]);
+        // username: body.username ?? null, // when schema enabled
 
-    res.status(201).json({ data: rows[0] });
+        tempPassword: body.tempPassword,
+
+        phone_country_code: body.phone_country_code ?? null,
+        phone: body.phone ?? null,
+        city: body.city ?? null,
+        state: body.state ?? null,
+        country: body.country ?? null,
+        postal_code: body.postal_code ?? null,
+
+        designation: body.designation ?? null,
+        department: body.department ?? null,
+        employee_code: body.employee_code ?? null,
+
+        metadata: body.metadata ?? null,
+      });
+
+      return res.status(201).json({
+        data: user,
+        tempPassword, // ✅ HR flow
+      });
+    } catch (err: any) {
+      if (err?.statusCode)
+        return res.status(err.statusCode).json({ message: err.message });
+      if (err?.code === "23505")
+        return res.status(409).json({ message: "User already exists" });
+      next(err);
+    }
   });
 
-  router.patch("/:id", requireRoles(["ADMIN"]), async (req: any, res) => {
-    const tenantId = getTenantId(req);
-    const userId = req.params.id;
-    const body = UpdateUserSchema.parse(req.body);
+  router.patch("/:id", requireRoles(["ADMIN"]), async (req: any, res, next) => {
+    try {
+      const tenantId = getTenantId(req);
+      const userId = req.params.id;
+      const body = UpdateUserSchema.parse(req.body);
 
-    const allowed = Object.entries(body).filter(([, v]) => v !== undefined);
-    if (allowed.length === 0) {
-      return res.status(400).json({ message: "No fields to update" });
+      const user = await usersService.updateUser({
+        tenantId,
+        userId,
+        patch: body,
+      });
+
+      if (!user) return res.status(404).json({ message: "User not found" });
+      res.json({ data: user });
+    } catch (err: any) {
+      if (err?.statusCode)
+        return res.status(err.statusCode).json({ message: err.message });
+      next(err);
     }
+  });
 
-    // build dynamic SET safely
-    const setParts: string[] = [];
-    const params: any[] = [];
-    let i = 1;
+  router.patch(
+    "/:id/role",
+    requireRoles(["ADMIN"]),
+    async (req: any, res, next) => {
+      try {
+        const tenantId = getTenantId(req);
+        const userId = req.params.id;
+        const body = UpdateRoleSchema.parse(req.body);
 
-    for (const [k, v] of allowed) {
-      if (k === "metadata") {
-        setParts.push(
-          `metadata = COALESCE(metadata, '{}'::jsonb) || $${i}::jsonb`,
-        );
-        params.push(JSON.stringify(v));
-      } else {
-        setParts.push(`${k} = $${i}`);
-        params.push(v);
+        const user = await usersService.updateRole(tenantId, userId, body.role);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        res.json({ data: user });
+      } catch (err) {
+        next(err);
       }
-      i++;
-    }
-
-    // tenant guard ALWAYS
-    params.push(userId);
-    params.push(tenantId);
-
-    const q = `
-      UPDATE users
-      SET ${setParts.join(", ")}
-      WHERE id = $${i} AND tenant_id = $${i + 1}
-      RETURNING id, email, name, role, is_active, created_at, updated_at
-    `;
-
-    const { rows } = await pool.query(q, params);
-    if (!rows[0]) return res.status(404).json({ message: "User not found" });
-    res.json({ data: rows[0] });
-  });
-
-  router.patch("/:id/role", requireRoles(["ADMIN"]), async (req: any, res) => {
-    const tenantId = getTenantId(req);
-    const userId = req.params.id;
-    const body = UpdateRoleSchema.parse(req.body);
-
-    const { rows } = await pool.query(
-      `
-      UPDATE users
-      SET role = $1
-      WHERE id = $2 AND tenant_id = $3
-      RETURNING id, email, name, role, is_active, updated_at
-      `,
-      [body.role, userId, tenantId],
-    );
-
-    if (!rows[0]) return res.status(404).json({ message: "User not found" });
-    res.json({ data: rows[0] });
-  });
+    },
+  );
 
   router.patch(
     "/:id/status",
     requireRoles(["ADMIN"]),
-    async (req: any, res) => {
-      const tenantId = getTenantId(req);
-      const userId = req.params.id;
-      const body = UpdateStatusSchema.parse(req.body);
+    async (req: any, res, next) => {
+      try {
+        const tenantId = getTenantId(req);
+        const userId = req.params.id;
+        const body = UpdateStatusSchema.parse(req.body);
 
-      const { rows } = await pool.query(
-        `
-      UPDATE users
-      SET is_active = $1
-      WHERE id = $2 AND tenant_id = $3
-      RETURNING id, email, name, role, is_active, updated_at
-      `,
-        [body.is_active, userId, tenantId],
-      );
+        const user = await usersService.updateStatus(
+          tenantId,
+          userId,
+          body.is_active,
+        );
+        if (!user) return res.status(404).json({ message: "User not found" });
 
-      if (!rows[0]) return res.status(404).json({ message: "User not found" });
-      res.json({ data: rows[0] });
+        res.json({ data: user });
+      } catch (err) {
+        next(err);
+      }
     },
   );
 
-  router.delete("/:id", requireRoles(["ADMIN"]), async (req: any, res) => {
-    const tenantId = getTenantId(req);
-    const userId = req.params.id;
+  router.delete(
+    "/:id",
+    requireRoles(["ADMIN"]),
+    async (req: any, res, next) => {
+      try {
+        const tenantId = getTenantId(req);
+        const userId = req.params.id;
 
-    const { rows } = await pool.query(
-      `
-      UPDATE users
-      SET is_active = false
-      WHERE id = $1 AND tenant_id = $2
-      RETURNING id, email, name, role, is_active, updated_at
-      `,
-      [userId, tenantId],
-    );
+        const user = await usersService.deactivateUser(tenantId, userId);
+        if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (!rows[0]) return res.status(404).json({ message: "User not found" });
-    res.json({ data: rows[0] });
-  });
+        res.json({ data: user });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   return router;
 }
