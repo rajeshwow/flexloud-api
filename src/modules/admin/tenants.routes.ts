@@ -1,67 +1,60 @@
-import { Request, Response, Router } from "express";
+import { Router } from "express";
 import { z } from "zod";
-import { bootstrapTenant, createTenant } from "./tenants.service";
+import { attachUserContext } from "../../auth/attachUserContext";
+import { requireAuth } from "../../common/auth";
+import * as tenantsService from "./tenants.service";
 
-// ✅ simple platform-admin guard (internal key)
-function requirePlatformAdmin(req: Request, res: Response, next: any) {
-  const key = req.header("x-internal-admin-key");
-  if (!key || key !== process.env.INTERNAL_ADMIN_KEY) {
-    return res.status(403).json({ message: "Forbidden" });
-  }
-  next();
-}
-
-const router = Router();
+const tenantRouter = Router();
 
 const CreateTenantSchema = z.object({
   name: z.string().min(2),
-  slug: z
-    .string()
-    .min(2)
-    .regex(/^[a-z0-9-]+$/, "slug must be lowercase, alphanumeric, hyphen"),
+  slug: z.string().min(2),
 });
 
-router.post(
-  "/v1/admin/tenants",
-  requirePlatformAdmin,
+tenantRouter.post(
+  "/tenants",
+  requireAuth,
+  attachUserContext,
   async (req, res, next) => {
     try {
       const body = CreateTenantSchema.parse(req.body);
-      const tenant = await createTenant(body);
-      return res.status(201).json({ data: tenant });
-    } catch (err) {
-      next(err);
+
+      const tenant = await tenantsService.createTenant({
+        name: body.name.trim(),
+        slug: body.slug.trim().toLowerCase(),
+      });
+
+      return res.status(201).json({
+        statusCode: 201,
+        message: "Tenant created",
+        data: tenant,
+      });
+    } catch (e) {
+      next(e);
     }
   },
 );
 
 const BootstrapSchema = z.object({
+  tenantId: z.string().min(5),
   adminEmail: z.string().email(),
   adminName: z.string().min(2),
-  // optional if you want link with Identity Platform subject
   adminSub: z.string().min(3).optional(),
 });
 
-router.post(
-  "/v1/admin/tenants/:tenantId/bootstrap",
-  requirePlatformAdmin,
-  async (req, res, next) => {
-    try {
-      const tenantId = req.params.tenantId;
-      const body = BootstrapSchema.parse(req.body);
+tenantRouter.post("/bootstrap", async (req, res, next) => {
+  try {
+    const body = BootstrapSchema.parse(req.body);
+    const result = await tenantsService.bootstrapTenant(body);
 
-      const result = await bootstrapTenant({
-        tenantId,
-        adminEmail: body.adminEmail,
-        adminName: body.adminName,
-        adminSub: body.adminSub,
-      });
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Tenant bootstrapped",
+      data: result,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
 
-      return res.status(200).json({ data: result });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
-
-export default router;
+export default tenantRouter;

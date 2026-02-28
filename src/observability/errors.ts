@@ -23,9 +23,13 @@ export function errorHandler(
     "request failed",
   );
 
-  const status =
-    err?.statusCode && Number.isInteger(err.statusCode) ? err.statusCode : 500;
+  const status = err.statusCode || err.status || 500;
   const safe =
     status === 500 ? "Internal Server Error" : String(err?.message ?? "Error");
-  res.status(status).json({ error: safe, requestId: ctx?.requestId });
+
+  return res.status(status).json({
+    statusCode: status,
+    message: safe,
+    requestId: ctx?.requestId,
+  });
 }

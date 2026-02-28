@@ -1,17 +1,15 @@
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
-import { env } from "./config/env";
-import { errorHandler, notFoundHandler } from "./observability/errors";
-import { requestLoggingMiddleware } from "./observability/requestLogging";
-
 import { attachUserContext } from "./auth/attachUserContext";
 import { authRouter } from "./auth/auth.routes";
 import { requireAuth } from "./common/auth";
-import tenantsRoutes from "./modules/admin/tenants.routes";
+import { resolveTenant } from "./common/tenant";
+import { env } from "./config/env";
+import tanentRouter from "./modules/admin/tenants.routes";
 import { usersRouter } from "./modules/users/users.routes";
+import { errorHandler, notFoundHandler } from "./observability/errors";
 import { clientLogsRouter } from "./routes/clientLogs";
-import { healthRouter } from "./routes/health";
 import { leadsRouter } from "./routes/leads";
 import { meRouter } from "./routes/me";
 import { notificationsRouter } from "./routes/notifications";
@@ -34,22 +32,21 @@ export function createApp() {
     }),
   );
 
-  app.use(requestLoggingMiddleware());
-  app.use("/v1/auth", authRouter);
+  // ✅ ADMIN routes (NO slug / NO resolveTenant)
+  // If bootstrap should be public, keep it before requireAuth
+  app.use("/v1/admin", tanentRouter);
 
-  // protect all /v1 routes
-  app.use("/v1", requireAuth);
-  app.use("/v1", attachUserContext);
+  // ✅ PUBLIC LOGIN (tenant slug required)
+  app.use("/v1/:slug/auth", resolveTenant, authRouter);
 
-  app.use("/health", healthRouter());
-  app.use("/ready", healthRouter());
+  // ✅ PROTECTED tenant routes
+  app.use("/v1/:slug", resolveTenant, requireAuth, attachUserContext);
 
-  app.use("/v1/me", meRouter());
-  app.use("/v1/leads", leadsRouter());
-  app.use("/v1/notifications", notificationsRouter());
-  app.use("/v1/client-logs", clientLogsRouter()); // optional
-  app.use(tenantsRoutes);
-  app.use("/v1/users", usersRouter());
+  app.use("/v1/:slug/me", meRouter());
+  app.use("/v1/:slug/leads", leadsRouter());
+  app.use("/v1/:slug/notifications", notificationsRouter());
+  app.use("/v1/:slug/client-logs", clientLogsRouter());
+  app.use("/v1/:slug/users", usersRouter());
 
   app.use(notFoundHandler);
   app.use(errorHandler);
