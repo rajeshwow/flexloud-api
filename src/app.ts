@@ -39,9 +39,10 @@ export function createApp() {
   // ✅ PUBLIC LOGIN (tenant slug required)
   app.use("/v1/:slug/auth", resolveTenant, authRouter);
 
-  // ✅ PROTECTED tenant routes
+  // ✅ PROTECTED tenant routes (everything under /v1/:slug is tenant scoped)
   app.use("/v1/:slug", resolveTenant, requireAuth, attachUserContext);
 
+  // ✅ me routes (tenant scoped only)
   app.use("/v1/:slug/me", meRouter());
   app.use("/v1/:slug/leads", leadsRouter());
   app.use("/v1/:slug/notifications", notificationsRouter());
