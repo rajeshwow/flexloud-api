@@ -7,6 +7,8 @@ import { requireAuth } from "./common/auth";
 import { resolveTenant } from "./common/tenant";
 import { env } from "./config/env";
 import tanentRouter from "./modules/admin/tenants.routes";
+import contactsRouter from "./modules/contacts/contacts.routes";
+import organizationsRouter from "./modules/organizations/organizations.routes";
 import { usersRouter } from "./modules/users/users.routes";
 import { errorHandler, notFoundHandler } from "./observability/errors";
 import { clientLogsRouter } from "./routes/clientLogs";
@@ -48,6 +50,8 @@ export function createApp() {
   app.use("/v1/:slug/notifications", notificationsRouter());
   app.use("/v1/:slug/client-logs", clientLogsRouter());
   app.use("/v1/:slug/users", usersRouter());
+  app.use("/v1", organizationsRouter);
+  app.use("/v1", contactsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
