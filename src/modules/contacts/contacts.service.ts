@@ -1,3 +1,6 @@
+import { NextFunction, Request, Response } from "express";
+import { z } from "zod";
+import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 
 type CreateContactInput = {
@@ -24,6 +27,25 @@ type GetAllContactsInput = {
   limit: number;
   search?: string;
 };
+
+const CreateContactSchema = z.object({
+  first_name: z.string().min(1, "First name is required"),
+  last_name: z.string().optional().nullable(),
+  mobile: z.string().optional().nullable(),
+  email: z
+    .string()
+    .email("Invalid email")
+    .optional()
+    .or(z.literal(""))
+    .nullable(),
+
+  city: z.string().optional().nullable(),
+  state: z.string().optional().nullable(),
+  country: z.string().optional().nullable(),
+
+  organization_id: z.string().uuid().optional().nullable(),
+  assigned_to: z.string().uuid().optional().nullable(),
+});
 
 export const contactsService = {
   async create(input: CreateContactInput) {
@@ -105,10 +127,8 @@ export const contactsService = {
         c.assigned_to,
         c.created_at,
         c.updated_at,
-
         o.name AS organization_name,
         u.name AS assigned_to_name
-
       FROM contacts c
       LEFT JOIN organizations o ON o.id = c.organization_id
       LEFT JOIN users u ON u.id = c.assigned_to
@@ -161,3 +181,83 @@ export const contactsService = {
     return rows[0] || null;
   },
 };
+
+export async function createContactHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const createdBy = req.user?.sub || null;
+
+    const input = CreateContactSchema.parse(req.body);
+
+    const result = await contactsService.create({
+      tenantId,
+      createdBy,
+      updatedBy: createdBy,
+      ...input,
+    });
+
+    res.status(201).json({
+      message: "Contact created successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getContactsHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 10);
+    const search = String(req.query.search || "").trim();
+
+    const result = await contactsService.getAll({
+      tenantId,
+      page,
+      limit,
+      search,
+    });
+
+    res.status(200).json({
+      message: "Contacts fetched successfully",
+      ...result,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getContactByIdHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+
+    const result = await contactsService.getById(id, tenantId);
+
+    if (!result) {
+      return res.status(404).json({
+        message: "Contact not found",
+      });
+    }
+
+    res.status(200).json({
+      message: "Contact fetched successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+}

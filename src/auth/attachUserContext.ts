@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import { getTenantId } from "../common/tenant";
 import { pool } from "../db/pool";
 
 type Role = "ADMIN" | "MANAGER" | "AGENT";
@@ -11,10 +12,10 @@ export async function attachUserContext(
   next: NextFunction,
 ) {
   try {
-    const userId = req.user?.sub;
-    const tenantIdFromToken = (req.user as any)?.tenantId;
+    const userId = (req.user as any)?.sub;
+    const tenantId = getTenantId(req);
 
-    if (!userId || !tenantIdFromToken) {
+    if (!userId || !tenantId) {
       throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
     }
 
@@ -25,22 +26,25 @@ export async function attachUserContext(
       WHERE id = $1 AND tenant_id = $2
       LIMIT 1
       `,
-      [String(userId), String(tenantIdFromToken)],
+      [String(userId), String(tenantId)],
     );
 
     const u = rows[0];
-    if (!u)
+
+    if (!u) {
       throw Object.assign(new Error("User not registered"), {
         statusCode: 401,
       });
-    if (!u.is_active)
+    }
+
+    if (!u.is_active) {
       throw Object.assign(new Error("User inactive"), { statusCode: 403 });
+    }
 
     if (!isRole(u.role)) {
       throw Object.assign(new Error("Invalid role"), { statusCode: 500 });
     }
 
-    // keep token fields + attach DB truth
     req.user = {
       ...(req.user as any),
       id: String(u.id),
@@ -52,7 +56,6 @@ export async function attachUserContext(
       username: u.username ?? undefined,
     } as any;
 
-    // convenience for getTenantId(req)
     (req as any).tenantId = String(u.tenant_id);
 
     next();
