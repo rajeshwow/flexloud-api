@@ -1,16 +1,18 @@
 import { z } from "zod";
 
 export const CreateLeadSchema = z.object({
+  lead_number: z.string().optional().nullable(),
   first_name: z.string().min(1, "First name is required"),
   last_name: z.string().optional().nullable(),
   designation: z.string().optional().nullable(),
   industry: z.string().optional().nullable(),
+  emails: z.array(z.string().email()).optional().nullable(),
 
   mobile: z.string().min(1, "Mobile is required"),
   office_phone: z.string().optional().nullable(),
 
   organization_name: z.string().optional().nullable(),
-  dealer_organization_id: z.string().uuid().optional().nullable(),
+  dealer_organization: z.string().optional().nullable(),
 
   status: z.string().optional().default("new"),
   product_category: z.string().min(1, "Product category is required"),
@@ -18,7 +20,7 @@ export const CreateLeadSchema = z.object({
 
   requirements: z.string().optional().nullable(),
 
-  next_followup_at: z.string().optional().nullable(),
+  next_followup: z.string().optional().nullable(),
   followup: z.string().optional().nullable(),
   followup_type: z.string().optional().nullable(),
   lead_source: z.string().optional().nullable(),

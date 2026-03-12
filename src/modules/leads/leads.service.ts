@@ -13,17 +13,19 @@ type CreateLeadInput = {
   tenantId: string;
   createdBy: string | null;
   updatedBy: string | null;
+  lead_number?: string | null;
 
   first_name: string;
   last_name?: string | null;
   designation?: string | null;
   industry?: string | null;
+  emails?: string[] | null;
 
   mobile: string;
   office_phone?: string | null;
 
   organization_name?: string | null;
-  dealer_organization_id?: string | null;
+  dealer_organization?: string | null;
 
   status?: string;
   product_category: string;
@@ -31,7 +33,7 @@ type CreateLeadInput = {
 
   requirements?: string | null;
 
-  next_followup_at?: string | null;
+  next_followup?: string | null;
   followup?: string | null;
   followup_type?: string | null;
   lead_source?: string | null;
@@ -85,7 +87,7 @@ function generateLeadNumber() {
 export const leadsService = {
   async create(input: CreateLeadInput) {
     const leadId = randomUUID();
-    const leadNumber = generateLeadNumber();
+    const leadNumber = input.lead_number || generateLeadNumber();
 
     const query = `
       INSERT INTO leads (
@@ -99,12 +101,12 @@ export const leadsService = {
         mobile,
         office_phone,
         organization_name,
-        dealer_organization_id,
+        dealer_organization,
         status,
         product_category,
         priority,
         requirements,
-        next_followup_at,
+        next_followup,
         followup,
         followup_type,
         lead_source,
@@ -151,12 +153,12 @@ export const leadsService = {
       input.mobile,
       input.office_phone ?? null,
       input.organization_name ?? null,
-      input.dealer_organization_id ?? null,
+      input.dealer_organization ?? null,
       input.status ?? "new",
       input.product_category,
       input.priority,
       input.requirements ?? null,
-      input.next_followup_at ?? null,
+      input.next_followup ?? null,
       input.followup ?? null,
       input.followup_type ?? null,
       input.lead_source ?? null,
@@ -193,20 +195,20 @@ export const leadsService = {
     const limit = input.limit > 0 ? input.limit : 10;
     const offset = (page - 1) * limit;
 
-    let whereClause = `WHERE l.tenant_id = $1`;
+    let whereClause = `WHERE l.tenant_id = $1 AND l.deleted_at IS NULL`;
     const values: Array<string | number> = [input.tenantId];
     let idx = values.length + 1;
 
     if (input.search?.trim()) {
       whereClause += `
-        AND (
-          l.first_name ILIKE $${idx}
-          OR l.last_name ILIKE $${idx}
-          OR l.mobile ILIKE $${idx}
-          OR l.lead_number ILIKE $${idx}
-          OR l.organization_name ILIKE $${idx}
-        )
-      `;
+      AND (
+        l.first_name ILIKE $${idx}
+        OR l.last_name ILIKE $${idx}
+        OR l.mobile ILIKE $${idx}
+        OR l.lead_number ILIKE $${idx}
+        OR l.organization_name ILIKE $${idx}
+      )
+    `;
       values.push(`%${input.search.trim()}%`);
       idx++;
     }
@@ -224,21 +226,21 @@ export const leadsService = {
     }
 
     const listQuery = `
-      SELECT
-        l.*,
-        u.name AS assigned_to_name
-      FROM leads l
-      LEFT JOIN users u ON u.id = l.assigned_to
-      ${whereClause}
-      ORDER BY l.created_at DESC
-      LIMIT $${idx} OFFSET $${idx + 1};
-    `;
+    SELECT
+      l.*,
+      TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
+    FROM leads l
+    LEFT JOIN users u ON u.id = l.assigned_to
+    ${whereClause}
+    ORDER BY l.created_at DESC
+    LIMIT $${idx} OFFSET $${idx + 1};
+  `;
 
     const countQuery = `
-      SELECT COUNT(*)::int AS total
-      FROM leads l
-      ${whereClause};
-    `;
+    SELECT COUNT(*)::int AS total
+    FROM leads l
+    ${whereClause};
+  `;
 
     const listValues = [...values, limit, offset];
 
@@ -262,14 +264,16 @@ export const leadsService = {
 
   async getById(tenantId: string, leadId: string) {
     const query = `
-      SELECT
-        l.*,
-        u.name AS assigned_to_name
-      FROM leads l
-      LEFT JOIN users u ON u.id = l.assigned_to
-      WHERE l.id = $1 AND l.tenant_id = $2
-      LIMIT 1;
-    `;
+    SELECT
+      l.*,
+      TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
+    FROM leads l
+    LEFT JOIN users u ON u.id = l.assigned_to
+    WHERE l.id = $1
+      AND l.tenant_id = $2
+      AND l.deleted_at IS NULL
+    LIMIT 1;
+  `;
 
     const result = await pool.query(query, [leadId, tenantId]);
     return result.rows[0] || null;
@@ -277,10 +281,11 @@ export const leadsService = {
 
   async update(input: UpdateLeadInput) {
     const fields: string[] = [];
-    const values: Array<string | number | null> = [];
+    const values: Array<string | number | null | object> = [];
     let idx = 1;
 
     const payload: Record<string, unknown> = {
+      lead_number: input.lead_number,
       first_name: input.first_name,
       last_name: input.last_name,
       designation: input.designation,
@@ -288,12 +293,13 @@ export const leadsService = {
       mobile: input.mobile,
       office_phone: input.office_phone,
       organization_name: input.organization_name,
-      dealer_organization_id: input.dealer_organization_id,
+      emails: input.emails,
+      dealer_organization: input.dealer_organization,
       status: input.status,
       product_category: input.product_category,
       priority: input.priority,
       requirements: input.requirements,
-      next_followup_at: input.next_followup_at,
+      next_followup: input.next_followup,
       followup: input.followup,
       followup_type: input.followup_type,
       lead_source: input.lead_source,
@@ -323,7 +329,7 @@ export const leadsService = {
     Object.entries(payload).forEach(([key, value]) => {
       if (value !== undefined) {
         fields.push(`${key} = $${idx}`);
-        values.push(value as string | number | null);
+        values.push(value as string | number | null | object);
         idx++;
       }
     });
@@ -331,11 +337,13 @@ export const leadsService = {
     fields.push(`updated_at = NOW()`);
 
     const query = `
-      UPDATE leads
-      SET ${fields.join(", ")}
-      WHERE id = $${idx} AND tenant_id = $${idx + 1}
-      RETURNING *;
-    `;
+    UPDATE leads
+    SET ${fields.join(", ")}
+    WHERE id = $${idx}
+      AND tenant_id = $${idx + 1}
+      AND deleted_at IS NULL
+    RETURNING *;
+  `;
 
     values.push(input.leadId, input.tenantId);
 
@@ -345,10 +353,13 @@ export const leadsService = {
 
   async remove(tenantId: string, leadId: string) {
     const query = `
-      DELETE FROM leads
-      WHERE id = $1 AND tenant_id = $2
-      RETURNING id;
-    `;
+    UPDATE leads
+    SET deleted_at = NOW(), updated_at = NOW()
+    WHERE id = $1
+      AND tenant_id = $2
+      AND deleted_at IS NULL
+    RETURNING id;
+  `;
 
     const result = await pool.query(query, [leadId, tenantId]);
     return result.rows[0] || null;
@@ -367,6 +378,7 @@ export async function createLeadHandler(
 
     const lead = await leadsService.create({
       tenantId,
+      lead_number: body.lead_number,
       createdBy: userId,
       updatedBy: userId,
       ...body,
