@@ -1,7 +1,13 @@
 import bcrypt from "bcryptjs";
+import { NextFunction, Response } from "express";
+import { z } from "zod";
+import { getPagination } from "../../common/pagination";
+import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 
 export type Role = "ADMIN" | "MANAGER" | "AGENT";
+
+const RoleEnum = z.enum(["ADMIN", "MANAGER", "AGENT"]);
 
 export type ListUsersParams = {
   tenantId: string;
@@ -18,22 +24,32 @@ export type CreateUserInput = {
   name: string;
   role: Role;
 
-  // optional extras
+  display_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+
   phone_country_code?: string | null;
   phone?: string | null;
   city?: string | null;
+  district?: string | null;
   state?: string | null;
   country?: string | null;
   postal_code?: string | null;
+
+  address_line_1?: string | null;
+  address_line_2?: string | null;
+  landmark?: string | null;
 
   designation?: string | null;
   department?: string | null;
   employee_code?: string | null;
 
+  timezone?: string | null;
+  language?: string | null;
+
   tempPassword?: string;
   metadata?: Record<string, any> | null;
 
-  // if you have username column
   username?: string | null;
   is_owner?: boolean;
 };
@@ -41,8 +57,78 @@ export type CreateUserInput = {
 export type UpdateUserInput = {
   tenantId: string;
   userId: string;
-  patch: Record<string, any>; // already validated in router
+  patch: Record<string, any>;
 };
+
+const CreateUserSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(2),
+  role: RoleEnum.default("AGENT"),
+
+  display_name: z.string().optional(),
+  first_name: z.string().optional(),
+  last_name: z.string().optional(),
+
+  phone_country_code: z.string().optional(),
+  phone: z.string().optional(),
+
+  city: z.string().optional(),
+  district: z.string().optional(),
+  state: z.string().optional(),
+  country: z.string().optional(),
+  postal_code: z.string().optional(),
+
+  address_line_1: z.string().optional(),
+  address_line_2: z.string().optional(),
+  landmark: z.string().optional(),
+
+  designation: z.string().optional(),
+  department: z.string().optional(),
+  employee_code: z.string().optional(),
+
+  timezone: z.string().optional(),
+  language: z.string().optional(),
+
+  tempPassword: z.string().min(6).optional(),
+  metadata: z.record(z.any()).optional(),
+});
+
+const UpdateUserSchema = z.object({
+  name: z.string().min(2).optional(),
+  display_name: z.string().optional(),
+  first_name: z.string().optional(),
+  last_name: z.string().optional(),
+
+  phone_country_code: z.string().optional(),
+  phone: z.string().optional(),
+
+  city: z.string().optional(),
+  district: z.string().optional(),
+  state: z.string().optional(),
+  country: z.string().optional(),
+  postal_code: z.string().optional(),
+
+  address_line_1: z.string().optional(),
+  address_line_2: z.string().optional(),
+  landmark: z.string().optional(),
+
+  designation: z.string().optional(),
+  department: z.string().optional(),
+  employee_code: z.string().optional(),
+
+  timezone: z.string().optional(),
+  language: z.string().optional(),
+
+  metadata: z.record(z.any()).optional(),
+});
+
+const UpdateRoleSchema = z.object({
+  role: RoleEnum,
+});
+
+const UpdateStatusSchema = z.object({
+  is_active: z.boolean(),
+});
 
 function generateTempPassword() {
   return (
@@ -71,7 +157,13 @@ export const usersService = {
 
     const s = search?.trim();
     if (s) {
-      where.push(`(email ILIKE $${i} OR name ILIKE $${i})`);
+      where.push(`(
+        email ILIKE $${i}
+        OR name ILIKE $${i}
+        OR COALESCE(phone, '') ILIKE $${i}
+        OR COALESCE(department, '') ILIKE $${i}
+        OR COALESCE(designation, '') ILIKE $${i}
+      )`);
       values.push(`%${s}%`);
       i++;
     }
@@ -89,22 +181,41 @@ export const usersService = {
       i++;
     }
 
-    const countQ = `SELECT COUNT(1)::int AS total FROM users WHERE ${where.join(
-      " AND ",
-    )}`;
+    const countQ = `SELECT COUNT(1)::int AS total FROM users WHERE ${where.join(" AND ")}`;
     const totalRes = await pool.query(countQ, values);
     const total = totalRes.rows[0]?.total ?? 0;
 
     const dataQ = `
-      SELECT id, email, name, role, is_active,
-             phone_country_code, phone, city, state, country,
-             designation, department, employee_code,
-             created_at, updated_at, is_owner
+      SELECT
+        id,
+        email,
+        name,
+        role,
+        is_active,
+        display_name,
+        first_name,
+        last_name,
+        phone_country_code,
+        phone,
+        city,
+        district,
+        state,
+        country,
+        postal_code,
+        designation,
+        department,
+        employee_code,
+        timezone,
+        language,
+        created_at,
+        updated_at,
+        is_owner
       FROM users
       WHERE ${where.join(" AND ")}
       ORDER BY created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
     `;
+
     const dataRes = await pool.query(dataQ, [...values, limit, offset]);
 
     return { rows: dataRes.rows, total };
@@ -131,54 +242,122 @@ export const usersService = {
 
     try {
       const q = `
-  INSERT INTO users (
-    id, tenant_id, email, name, role, is_active,
-    username,
-    password_hash,
-    phone_country_code, phone, city, state, country, postal_code,
-    designation, department, employee_code,
-    metadata,
-    is_owner
-  )
-  VALUES (
-    gen_random_uuid(), $1, $2, $3, $4, TRUE,
-    $5,
-    $6,
-    $7, $8, $9, $10, $11, $12,
-    $13, $14, $15,
-    COALESCE($16::jsonb, '{}'::jsonb),
-    $17
-  )
-  RETURNING
-    id, tenant_id, email, name, role, username, is_owner, is_active,
-    phone_country_code, phone, city, state, country, postal_code,
-    designation, department, employee_code,
-    created_at, updated_at
-`;
+        INSERT INTO users (
+          id,
+          tenant_id,
+          email,
+          name,
+          role,
+          is_active,
+          username,
+          password_hash,
+
+          display_name,
+          first_name,
+          last_name,
+
+          phone_country_code,
+          phone,
+
+          city,
+          district,
+          state,
+          country,
+          postal_code,
+
+          address_line_1,
+          address_line_2,
+          landmark,
+
+          designation,
+          department,
+          employee_code,
+
+          timezone,
+          language,
+
+          metadata,
+          is_owner
+        )
+        VALUES (
+          gen_random_uuid(),
+          $1, $2, $3, $4, TRUE, $5, $6,
+          $7, $8, $9,
+          $10, $11,
+          $12, $13, $14, $15, $16,
+          $17, $18, $19,
+          $20, $21, $22,
+          $23, $24,
+          COALESCE($25::jsonb, '{}'::jsonb),
+          $26
+        )
+        RETURNING
+          id,
+          tenant_id,
+          email,
+          name,
+          role,
+          username,
+          is_owner,
+          is_active,
+          display_name,
+          first_name,
+          last_name,
+          phone_country_code,
+          phone,
+          city,
+          district,
+          state,
+          country,
+          postal_code,
+          address_line_1,
+          address_line_2,
+          landmark,
+          designation,
+          department,
+          employee_code,
+          timezone,
+          language,
+          created_at,
+          updated_at
+      `;
 
       const isOwner = input.is_owner === true;
 
       const { rows } = await pool.query(q, [
-        input.tenantId, // $1
-        email, // $2
-        input.name, // $3
-        input.role, // $4
-        username, // $5
-        passwordHash, // $6
+        input.tenantId, // 1
+        email, // 2
+        input.name, // 3
+        input.role, // 4
+        username, // 5
+        passwordHash, // 6
 
-        input.phone_country_code ?? null, // $7
-        input.phone ?? null, // $8
-        input.city ?? null, // $9
-        input.state ?? null, // $10
-        input.country ?? null, // $11
-        input.postal_code ?? null, // $12
+        input.display_name ?? null, // 7
+        input.first_name ?? null, // 8
+        input.last_name ?? null, // 9
 
-        input.designation ?? null, // $13
-        input.department ?? null, // $14
-        input.employee_code ?? null, // $15
+        input.phone_country_code ?? null, // 10
+        input.phone ?? null, // 11
 
-        input.metadata ? JSON.stringify(input.metadata) : null, // $16
-        isOwner, // $17
+        input.city ?? null, // 12
+        input.district ?? null, // 13
+        input.state ?? null, // 14
+        input.country ?? null, // 15
+        input.postal_code ?? null, // 16
+
+        input.address_line_1 ?? null, // 17
+        input.address_line_2 ?? null, // 18
+        input.landmark ?? null, // 19
+
+        input.designation ?? null, // 20
+        input.department ?? null, // 21
+        input.employee_code ?? null, // 22
+
+        input.timezone ?? null, // 23
+        input.language ?? null, // 24
+
+        input.metadata ? JSON.stringify(input.metadata) : null, // 25
+        isOwner, // 26
       ]);
 
       return { user: rows[0], tempPassword };
@@ -196,6 +375,7 @@ export const usersService = {
     const { tenantId, userId, patch } = input;
 
     const allowed = Object.entries(patch).filter(([, v]) => v !== undefined);
+
     if (allowed.length === 0) {
       const err: any = new Error("No fields to update");
       err.statusCode = 400;
@@ -226,7 +406,32 @@ export const usersService = {
       UPDATE users
       SET ${setParts.join(", ")}
       WHERE id = $${i} AND tenant_id = $${i + 1}
-      RETURNING id, email, name, role, is_active, created_at, updated_at
+      RETURNING
+        id,
+        email,
+        name,
+        role,
+        is_active,
+        display_name,
+        first_name,
+        last_name,
+        phone_country_code,
+        phone,
+        city,
+        district,
+        state,
+        country,
+        postal_code,
+        address_line_1,
+        address_line_2,
+        landmark,
+        designation,
+        department,
+        employee_code,
+        timezone,
+        language,
+        created_at,
+        updated_at
     `;
 
     const { rows } = await pool.query(q, params);
@@ -259,7 +464,6 @@ export const usersService = {
     return rows[0] || null;
   },
 
-  // soft delete = deactivate
   async deactivateUser(tenantId: string, userId: string) {
     const { rows } = await pool.query(
       `
@@ -273,3 +477,234 @@ export const usersService = {
     return rows[0] || null;
   },
 };
+
+export async function listUsersHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+
+    const search = (req.query.search as string | undefined)?.trim();
+    const role = (req.query.role as string | undefined)?.trim();
+    const active = req.query.active as string | undefined;
+
+    const { page, limit, offset } = getPagination(req.query);
+
+    const { rows, total } = await usersService.listUsers({
+      tenantId,
+      search,
+      role,
+      active: active as any,
+      limit,
+      offset,
+    });
+
+    return res.json({
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserByIdHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const userId = req.params.id;
+
+    const user = await usersService.getUserById(tenantId, userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json({ data: user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createUserHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const body = CreateUserSchema.parse(req.body);
+
+    const { user, tempPassword } = await usersService.createUser({
+      tenantId,
+      email: body.email,
+      name: body.name,
+      role: body.role,
+
+      display_name: body.display_name ?? null,
+      first_name: body.first_name ?? null,
+      last_name: body.last_name ?? null,
+
+      phone_country_code: body.phone_country_code ?? null,
+      phone: body.phone ?? null,
+
+      city: body.city ?? null,
+      district: body.district ?? null,
+      state: body.state ?? null,
+      country: body.country ?? null,
+      postal_code: body.postal_code ?? null,
+
+      address_line_1: body.address_line_1 ?? null,
+      address_line_2: body.address_line_2 ?? null,
+      landmark: body.landmark ?? null,
+
+      designation: body.designation ?? null,
+      department: body.department ?? null,
+      employee_code: body.employee_code ?? null,
+
+      timezone: body.timezone ?? null,
+      language: body.language ?? null,
+
+      tempPassword: body.tempPassword,
+      metadata: body.metadata ?? null,
+    });
+
+    return res.status(201).json({
+      data: user,
+      tempPassword,
+    });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: err.flatten(),
+      });
+    }
+
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
+
+    if (err?.code === "23505") {
+      return res.status(409).json({ message: "User already exists" });
+    }
+
+    next(err);
+  }
+}
+
+export async function updateUserHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const userId = req.params.id;
+    const body = UpdateUserSchema.parse(req.body);
+
+    const user = await usersService.updateUser({
+      tenantId,
+      userId,
+      patch: body,
+    });
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json({ data: user });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: err.flatten(),
+      });
+    }
+
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
+
+    next(err);
+  }
+}
+
+export async function updateRoleHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const userId = req.params.id;
+    const body = UpdateRoleSchema.parse(req.body);
+
+    const user = await usersService.updateRole(tenantId, userId, body.role);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json({ data: user });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: err.flatten(),
+      });
+    }
+
+    next(err);
+  }
+}
+
+export async function updateStatusHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const userId = req.params.id;
+    const body = UpdateStatusSchema.parse(req.body);
+
+    const user = await usersService.updateStatus(
+      tenantId,
+      userId,
+      body.is_active,
+    );
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json({ data: user });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: err.flatten(),
+      });
+    }
+
+    next(err);
+  }
+}
+
+export async function deactivateUserHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const userId = req.params.id;
+
+    const user = await usersService.deactivateUser(tenantId, userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json({ data: user });
+  } catch (err) {
+    next(err);
+  }
+}
