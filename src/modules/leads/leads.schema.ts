@@ -6,8 +6,17 @@ export const CreateLeadSchema = z.object({
   last_name: z.string().optional().nullable(),
   designation: z.string().optional().nullable(),
   industry: z.string().optional().nullable(),
-  emails: z.array(z.string().email()).optional().nullable(),
-
+  emails: z
+    .array(
+      z.object({
+        email: z.string().email("Invalid email"),
+        primary: z.boolean().optional(),
+        opt_out: z.boolean().optional(),
+        invalid: z.boolean().optional(),
+      }),
+    )
+    .optional()
+    .nullable(),
   mobile: z.string().min(1, "Mobile is required"),
   office_phone: z.string().optional().nullable(),
 
@@ -38,17 +47,17 @@ export const CreateLeadSchema = z.object({
 
   primary_address_street: z.string().optional().nullable(),
   primary_address_area: z.string().optional().nullable(),
-  primary_address_postalcode: z.string().optional().nullable(),
+  primary_address_postal_code: z.string().optional().nullable(),
   primary_address_city: z.string().optional().nullable(),
   primary_address_state: z.string().optional().nullable(),
   primary_address_country: z.string().optional().nullable(),
 
-  alt_address_street: z.string().optional().nullable(),
-  alt_address_area: z.string().optional().nullable(),
-  alt_address_postalcode: z.string().optional().nullable(),
-  alt_address_city: z.string().optional().nullable(),
-  alt_address_state: z.string().optional().nullable(),
-  alt_address_country: z.string().optional().nullable(),
+  alternate_address_street: z.string().optional().nullable(),
+  alternate_address_area: z.string().optional().nullable(),
+  alternate_address_postal_code: z.string().optional().nullable(),
+  alternate_address_city: z.string().optional().nullable(),
+  alternate_address_state: z.string().optional().nullable(),
+  alternate_address_country: z.string().optional().nullable(),
 });
 
 export const UpdateLeadSchema = CreateLeadSchema.partial();

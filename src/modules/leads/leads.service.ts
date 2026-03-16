@@ -19,7 +19,14 @@ type CreateLeadInput = {
   last_name?: string | null;
   designation?: string | null;
   industry?: string | null;
-  emails?: string[] | null;
+  emails?:
+    | {
+        email: string;
+        primary?: boolean;
+        opt_out?: boolean;
+        invalid?: boolean;
+      }[]
+    | null;
 
   mobile: string;
   office_phone?: string | null;
@@ -51,17 +58,17 @@ type CreateLeadInput = {
 
   primary_address_street?: string | null;
   primary_address_area?: string | null;
-  primary_address_postalcode?: string | null;
+  primary_address_postal_code?: string | null;
   primary_address_city?: string | null;
   primary_address_state?: string | null;
   primary_address_country?: string | null;
 
-  alt_address_street?: string | null;
-  alt_address_area?: string | null;
-  alt_address_postalcode?: string | null;
-  alt_address_city?: string | null;
-  alt_address_state?: string | null;
-  alt_address_country?: string | null;
+  alternate_address_street?: string | null;
+  alternate_address_area?: string | null;
+  alternate_address_postal_code?: string | null;
+  alternate_address_city?: string | null;
+  alternate_address_state?: string | null;
+  alternate_address_country?: string | null;
 };
 
 type UpdateLeadInput = Partial<CreateLeadInput> & {
@@ -101,6 +108,7 @@ export const leadsService = {
         mobile,
         office_phone,
         organization_name,
+        emails,
         dealer_organization,
         status,
         product_category,
@@ -137,7 +145,7 @@ export const leadsService = {
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
         $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
         $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
-        $31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41
+        $31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42
       )
       RETURNING *;
     `;
@@ -153,6 +161,7 @@ export const leadsService = {
       input.mobile,
       input.office_phone ?? null,
       input.organization_name ?? null,
+      input.emails ? JSON.stringify(input.emails) : null,
       input.dealer_organization ?? null,
       input.status ?? "new",
       input.product_category,
@@ -172,16 +181,16 @@ export const leadsService = {
       input.sales_stage ?? null,
       input.primary_address_street ?? null,
       input.primary_address_area ?? null,
-      input.primary_address_postalcode ?? null,
+      input.primary_address_postal_code ?? null,
       input.primary_address_city ?? null,
       input.primary_address_state ?? null,
       input.primary_address_country ?? null,
-      input.alt_address_street ?? null,
-      input.alt_address_area ?? null,
-      input.alt_address_postalcode ?? null,
-      input.alt_address_city ?? null,
-      input.alt_address_state ?? null,
-      input.alt_address_country ?? null,
+      input.alternate_address_street ?? null,
+      input.alternate_address_area ?? null,
+      input.alternate_address_postal_code ?? null,
+      input.alternate_address_city ?? null,
+      input.alternate_address_state ?? null,
+      input.alternate_address_country ?? null,
       input.createdBy,
       input.updatedBy,
     ];
@@ -313,16 +322,16 @@ export const leadsService = {
       sales_stage: input.sales_stage,
       primary_address_street: input.primary_address_street,
       primary_address_area: input.primary_address_area,
-      primary_address_postalcode: input.primary_address_postalcode,
+      primary_address_postal_code: input.primary_address_postal_code,
       primary_address_city: input.primary_address_city,
       primary_address_state: input.primary_address_state,
       primary_address_country: input.primary_address_country,
-      alt_address_street: input.alt_address_street,
-      alt_address_area: input.alt_address_area,
-      alt_address_postalcode: input.alt_address_postalcode,
-      alt_address_city: input.alt_address_city,
-      alt_address_state: input.alt_address_state,
-      alt_address_country: input.alt_address_country,
+      alternate_address_street: input.alternate_address_street,
+      alternate_address_area: input.alternate_address_area,
+      alternate_address_postal_code: input.alternate_address_postal_code,
+      alternate_address_city: input.alternate_address_city,
+      alternate_address_state: input.alternate_address_state,
+      alternate_address_country: input.alternate_address_country,
       updated_by: input.updatedBy,
     };
 

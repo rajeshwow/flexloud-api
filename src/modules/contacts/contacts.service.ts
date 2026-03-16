@@ -32,16 +32,42 @@ const CreateContactSchema = z.object({
   first_name: z.string().min(1, "First name is required"),
   last_name: z.string().optional().nullable(),
   mobile: z.string().optional().nullable(),
-  email: z
-    .string()
-    .email("Invalid email")
-    .optional()
-    .or(z.literal(""))
-    .nullable(),
+  birthdate: z.string().optional().nullable(),
+  primary_contact: z.string().optional().nullable(),
 
-  city: z.string().optional().nullable(),
-  state: z.string().optional().nullable(),
-  country: z.string().optional().nullable(),
+  emails: z
+    .array(
+      z.object({
+        email: z.string().email("Invalid email"),
+        primary: z.boolean().optional(),
+        opt_out: z.boolean().optional(),
+        invalid: z.boolean().optional(),
+      }),
+    )
+    .optional()
+    .default([]),
+
+  primary_address: z
+    .object({
+      street: z.string().optional().nullable(),
+      area: z.string().optional().nullable(),
+      postal_code: z.string().optional().nullable(),
+      city: z.string().optional().nullable(),
+      state: z.string().optional().nullable(),
+      country: z.string().optional().nullable(),
+    })
+    .optional(),
+
+  alternate_address: z
+    .object({
+      street: z.string().optional().nullable(),
+      area: z.string().optional().nullable(),
+      postal_code: z.string().optional().nullable(),
+      city: z.string().optional().nullable(),
+      state: z.string().optional().nullable(),
+      country: z.string().optional().nullable(),
+    })
+    .optional(),
 
   organization_id: z.string().uuid().optional().nullable(),
   assigned_to: z.string().uuid().optional().nullable(),
@@ -193,16 +219,31 @@ export async function createContactHandler(
 
     const input = CreateContactSchema.parse(req.body);
 
+    const primaryEmail =
+      input.emails?.find((item) => item.primary)?.email ||
+      input.emails?.[0]?.email ||
+      null;
+
     const result = await contactsService.create({
       tenantId,
       createdBy,
       updatedBy: createdBy,
-      ...input,
+      first_name: input.first_name,
+      last_name: input.last_name ?? null,
+      mobile: input.mobile ?? null,
+      email: primaryEmail,
+      city: input.primary_address?.city ?? null,
+      state: input.primary_address?.state ?? null,
+      country: input.primary_address?.country ?? null,
+      organization_id: input.organization_id ?? null,
+      assigned_to: input.assigned_to ?? null,
     });
 
     res.status(201).json({
       message: "Contact created successfully",
       data: result,
+      status: "success",
+      statusCode: 201,
     });
   } catch (error) {
     next(error);
