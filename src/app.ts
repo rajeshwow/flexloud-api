@@ -14,6 +14,7 @@ import leadsRouter from "./modules/leads/leads.route";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import productsRouter from "./modules/products/products.routes";
+import tasksRouter from "./modules/tasks/tasks.routes";
 import usersRouter from "./modules/users/users.routes";
 import { errorHandler, notFoundHandler } from "./observability/errors";
 import { clientLogsRouter } from "./routes/clientLogs";
@@ -61,6 +62,7 @@ export function createApp() {
   app.use("/v1/:slug/opportunities", opportunitiesRouter);
   app.use("/v1/:slug/leads", leadsRouter);
   app.use("/v1/:slug/products", productsRouter);
+  app.use("/v1/:slug/tasks", tasksRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
