@@ -12,6 +12,7 @@ import tanentRouter from "./modules/admin/tenants.routes";
 import attendanceRouter from "./modules/attendance/attendance.routes";
 import contactsRouter from "./modules/contacts/contacts.routes";
 import leadsRouter from "./modules/leads/leads.route";
+import leaveRouter from "./modules/leaves/leave.routes";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import productsRouter from "./modules/products/products.routes";
@@ -65,6 +66,7 @@ export function createApp() {
   app.use("/v1/:slug/products", productsRouter);
   app.use("/v1/:slug/tasks", tasksRouter);
   app.use("/v1/:slug/attendance", attendanceRouter);
+  app.use("/v1/:slug/leaves", leaveRouter);
   app.use(notFoundHandler);
   app.use(errorHandler);
 
