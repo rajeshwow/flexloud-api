@@ -3,6 +3,7 @@ import { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
+import { createActivityLog } from "../activity/activity.service";
 import {
   CreateLeadSchema,
   GetLeadsSchema,
@@ -93,110 +94,141 @@ function generateLeadNumber() {
 
 export const leadsService = {
   async create(input: CreateLeadInput) {
-    const leadId = randomUUID();
-    const leadNumber = input.lead_number || generateLeadNumber();
+    const client = await pool.connect();
 
-    const query = `
-      INSERT INTO leads (
-        id,
-        tenant_id,
-        lead_number,
-        first_name,
-        last_name,
-        designation,
-        industry,
-        mobile,
-        office_phone,
-        organization_name,
-        emails,
-        dealer_organization,
-        status,
-        product_category,
-        priority,
-        requirements,
-        next_followup,
-        followup,
-        followup_type,
-        lead_source,
-        add_description,
-        description,
-        referred_by,
-        assigned_to,
-        opportunity_name,
-        opportunity_amount,
-        expected_close_date,
-        sales_stage,
-        primary_address_street,
-        primary_address_area,
-        primary_address_postalcode,
-        primary_address_city,
-        primary_address_state,
-        primary_address_country,
-        alt_address_street,
-        alt_address_area,
-        alt_address_postalcode,
-        alt_address_city,
-        alt_address_state,
-        alt_address_country,
-        created_by,
-        updated_by
-      )
-      VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-        $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
-        $31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42
-      )
-      RETURNING *;
-    `;
+    try {
+      await client.query("BEGIN");
 
-    const values = [
-      leadId,
-      input.tenantId,
-      leadNumber,
-      input.first_name,
-      input.last_name ?? null,
-      input.designation ?? null,
-      input.industry ?? null,
-      input.mobile,
-      input.office_phone ?? null,
-      input.organization_name ?? null,
-      input.emails ? JSON.stringify(input.emails) : null,
-      input.dealer_organization ?? null,
-      input.status ?? "new",
-      input.product_category,
-      input.priority,
-      input.requirements ?? null,
-      input.next_followup ?? null,
-      input.followup ?? null,
-      input.followup_type ?? null,
-      input.lead_source ?? null,
-      input.add_description ?? null,
-      input.description ?? null,
-      input.referred_by ?? null,
-      input.assigned_to ?? null,
-      input.opportunity_name ?? null,
-      input.opportunity_amount ?? null,
-      input.expected_close_date ?? null,
-      input.sales_stage ?? null,
-      input.primary_address_street ?? null,
-      input.primary_address_area ?? null,
-      input.primary_address_postal_code ?? null,
-      input.primary_address_city ?? null,
-      input.primary_address_state ?? null,
-      input.primary_address_country ?? null,
-      input.alternate_address_street ?? null,
-      input.alternate_address_area ?? null,
-      input.alternate_address_postal_code ?? null,
-      input.alternate_address_city ?? null,
-      input.alternate_address_state ?? null,
-      input.alternate_address_country ?? null,
-      input.createdBy,
-      input.updatedBy,
-    ];
+      const leadId = randomUUID();
+      const leadNumber = input.lead_number || generateLeadNumber();
 
-    const result = await pool.query(query, values);
-    return result.rows[0];
+      const query = `
+        INSERT INTO leads (
+          id,
+          tenant_id,
+          lead_number,
+          first_name,
+          last_name,
+          designation,
+          industry,
+          mobile,
+          office_phone,
+          organization_name,
+          emails,
+          dealer_organization,
+          status,
+          product_category,
+          priority,
+          requirements,
+          next_followup,
+          followup,
+          followup_type,
+          lead_source,
+          add_description,
+          description,
+          referred_by,
+          assigned_to,
+          opportunity_name,
+          opportunity_amount,
+          expected_close_date,
+          sales_stage,
+          primary_address_street,
+          primary_address_area,
+          primary_address_postalcode,
+          primary_address_city,
+          primary_address_state,
+          primary_address_country,
+          alt_address_street,
+          alt_address_area,
+          alt_address_postalcode,
+          alt_address_city,
+          alt_address_state,
+          alt_address_country,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+          $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+          $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
+          $31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42
+        )
+        RETURNING *;
+      `;
+
+      const values = [
+        leadId,
+        input.tenantId,
+        leadNumber,
+        input.first_name,
+        input.last_name ?? null,
+        input.designation ?? null,
+        input.industry ?? null,
+        input.mobile,
+        input.office_phone ?? null,
+        input.organization_name ?? null,
+        input.emails ? JSON.stringify(input.emails) : null,
+        input.dealer_organization ?? null,
+        input.status ?? "new",
+        input.product_category,
+        input.priority,
+        input.requirements ?? null,
+        input.next_followup ?? null,
+        input.followup ?? null,
+        input.followup_type ?? null,
+        input.lead_source ?? null,
+        input.add_description ?? null,
+        input.description ?? null,
+        input.referred_by ?? null,
+        input.assigned_to ?? null,
+        input.opportunity_name ?? null,
+        input.opportunity_amount ?? null,
+        input.expected_close_date ?? null,
+        input.sales_stage ?? null,
+        input.primary_address_street ?? null,
+        input.primary_address_area ?? null,
+        input.primary_address_postal_code ?? null,
+        input.primary_address_city ?? null,
+        input.primary_address_state ?? null,
+        input.primary_address_country ?? null,
+        input.alternate_address_street ?? null,
+        input.alternate_address_area ?? null,
+        input.alternate_address_postal_code ?? null,
+        input.alternate_address_city ?? null,
+        input.alternate_address_state ?? null,
+        input.alternate_address_country ?? null,
+        input.createdBy,
+        input.updatedBy,
+      ];
+
+      const result = await client.query(query, values);
+      const newLead = result.rows[0];
+
+      await createActivityLog(
+        {
+          tenantId: input.tenantId,
+          entityType: "lead",
+          entityId: newLead.id,
+          actionType: "created",
+          title: "Lead created",
+          description: `Lead ${newLead.first_name ?? ""} ${newLead.last_name ?? ""} created`,
+          metadata: {
+            lead_number: newLead.lead_number,
+            status: newLead.status,
+          },
+          createdById: input.createdBy,
+        },
+        client,
+      );
+
+      await client.query("COMMIT");
+      return newLead;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async getAll(input: GetAllLeadsInput) {
@@ -235,21 +267,21 @@ export const leadsService = {
     }
 
     const listQuery = `
-    SELECT
-      l.*,
-      TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
-    FROM leads l
-    LEFT JOIN users u ON u.id = l.assigned_to
-    ${whereClause}
-    ORDER BY l.created_at DESC
-    LIMIT $${idx} OFFSET $${idx + 1};
-  `;
+      SELECT
+        l.*,
+        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
+      FROM leads l
+      LEFT JOIN users u ON u.id = l.assigned_to
+      ${whereClause}
+      ORDER BY l.created_at DESC
+      LIMIT $${idx} OFFSET $${idx + 1};
+    `;
 
     const countQuery = `
-    SELECT COUNT(*)::int AS total
-    FROM leads l
-    ${whereClause};
-  `;
+      SELECT COUNT(*)::int AS total
+      FROM leads l
+      ${whereClause};
+    `;
 
     const listValues = [...values, limit, offset];
 
@@ -273,102 +305,139 @@ export const leadsService = {
 
   async getById(tenantId: string, leadId: string) {
     const query = `
-    SELECT
-      l.*,
-      TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
-    FROM leads l
-    LEFT JOIN users u ON u.id = l.assigned_to
-    WHERE l.id = $1
-      AND l.tenant_id = $2
-      AND l.deleted_at IS NULL
-    LIMIT 1;
-  `;
+      SELECT
+        l.*,
+        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
+      FROM leads l
+      LEFT JOIN users u ON u.id = l.assigned_to
+      WHERE l.id = $1
+        AND l.tenant_id = $2
+        AND l.deleted_at IS NULL
+      LIMIT 1;
+    `;
 
     const result = await pool.query(query, [leadId, tenantId]);
     return result.rows[0] || null;
   },
 
   async update(input: UpdateLeadInput) {
-    const fields: string[] = [];
-    const values: Array<string | number | null | object> = [];
-    let idx = 1;
+    const client = await pool.connect();
 
-    const payload: Record<string, unknown> = {
-      lead_number: input.lead_number,
-      first_name: input.first_name,
-      last_name: input.last_name,
-      designation: input.designation,
-      industry: input.industry,
-      mobile: input.mobile,
-      office_phone: input.office_phone,
-      organization_name: input.organization_name,
-      emails: input.emails,
-      dealer_organization: input.dealer_organization,
-      status: input.status,
-      product_category: input.product_category,
-      priority: input.priority,
-      requirements: input.requirements,
-      next_followup: input.next_followup,
-      followup: input.followup,
-      followup_type: input.followup_type,
-      lead_source: input.lead_source,
-      add_description: input.add_description,
-      description: input.description,
-      referred_by: input.referred_by,
-      assigned_to: input.assigned_to,
-      opportunity_name: input.opportunity_name,
-      opportunity_amount: input.opportunity_amount,
-      expected_close_date: input.expected_close_date,
-      sales_stage: input.sales_stage,
-      primary_address_street: input.primary_address_street,
-      primary_address_area: input.primary_address_area,
-      primary_address_postal_code: input.primary_address_postal_code,
-      primary_address_city: input.primary_address_city,
-      primary_address_state: input.primary_address_state,
-      primary_address_country: input.primary_address_country,
-      alternate_address_street: input.alternate_address_street,
-      alternate_address_area: input.alternate_address_area,
-      alternate_address_postal_code: input.alternate_address_postal_code,
-      alternate_address_city: input.alternate_address_city,
-      alternate_address_state: input.alternate_address_state,
-      alternate_address_country: input.alternate_address_country,
-      updated_by: input.updatedBy,
-    };
+    try {
+      await client.query("BEGIN");
 
-    Object.entries(payload).forEach(([key, value]) => {
-      if (value !== undefined) {
-        fields.push(`${key} = $${idx}`);
-        values.push(value as string | number | null | object);
-        idx++;
+      const fields: string[] = [];
+      const values: Array<string | number | null | object> = [];
+      let idx = 1;
+
+      const payload: Record<string, unknown> = {
+        lead_number: input.lead_number,
+        first_name: input.first_name,
+        last_name: input.last_name,
+        designation: input.designation,
+        industry: input.industry,
+        mobile: input.mobile,
+        office_phone: input.office_phone,
+        organization_name: input.organization_name,
+        emails: input.emails ? JSON.stringify(input.emails) : input.emails,
+        dealer_organization: input.dealer_organization,
+        status: input.status,
+        product_category: input.product_category,
+        priority: input.priority,
+        requirements: input.requirements,
+        next_followup: input.next_followup,
+        followup: input.followup,
+        followup_type: input.followup_type,
+        lead_source: input.lead_source,
+        add_description: input.add_description,
+        description: input.description,
+        referred_by: input.referred_by,
+        assigned_to: input.assigned_to,
+        opportunity_name: input.opportunity_name,
+        opportunity_amount: input.opportunity_amount,
+        expected_close_date: input.expected_close_date,
+        sales_stage: input.sales_stage,
+        primary_address_street: input.primary_address_street,
+        primary_address_area: input.primary_address_area,
+        primary_address_postalcode: input.primary_address_postal_code,
+        primary_address_city: input.primary_address_city,
+        primary_address_state: input.primary_address_state,
+        primary_address_country: input.primary_address_country,
+        alt_address_street: input.alternate_address_street,
+        alt_address_area: input.alternate_address_area,
+        alt_address_postalcode: input.alternate_address_postal_code,
+        alt_address_city: input.alternate_address_city,
+        alt_address_state: input.alternate_address_state,
+        alt_address_country: input.alternate_address_country,
+        updated_by: input.updatedBy,
+      };
+
+      Object.entries(payload).forEach(([key, value]) => {
+        if (value !== undefined) {
+          fields.push(`${key} = $${idx}`);
+          values.push(value as string | number | null | object);
+          idx++;
+        }
+      });
+
+      fields.push(`updated_at = NOW()`);
+
+      const query = `
+        UPDATE leads
+        SET ${fields.join(", ")}
+        WHERE id = $${idx}
+          AND tenant_id = $${idx + 1}
+          AND deleted_at IS NULL
+        RETURNING *;
+      `;
+
+      values.push(input.leadId, input.tenantId);
+
+      const result = await client.query(query, values);
+      const updatedLead = result.rows[0] || null;
+
+      if (!updatedLead) {
+        await client.query("ROLLBACK");
+        return null;
       }
-    });
 
-    fields.push(`updated_at = NOW()`);
+      await createActivityLog(
+        {
+          tenantId: input.tenantId,
+          entityType: "lead",
+          entityId: input.leadId,
+          actionType: "updated",
+          title: "Lead updated",
+          description: "Lead details updated",
+          metadata: {
+            updated_fields: Object.keys(payload).filter(
+              (key) => payload[key] !== undefined,
+            ),
+          },
+          createdById: input.updatedBy,
+        },
+        client,
+      );
 
-    const query = `
-    UPDATE leads
-    SET ${fields.join(", ")}
-    WHERE id = $${idx}
-      AND tenant_id = $${idx + 1}
-      AND deleted_at IS NULL
-    RETURNING *;
-  `;
-
-    values.push(input.leadId, input.tenantId);
-
-    const result = await pool.query(query, values);
-    return result.rows[0] || null;
+      await client.query("COMMIT");
+      return updatedLead;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async remove(tenantId: string, leadId: string) {
     const query = `
-    UPDATE leads
-    SET deleted_at = NOW(), updated_at = NOW()
-    WHERE id = $1
-      AND tenant_id = $2
-      AND deleted_at IS NULL
-    RETURNING id;
-  `;
+      UPDATE leads
+      SET deleted_at = NOW(), updated_at = NOW()
+      WHERE id = $1
+        AND tenant_id = $2
+        AND deleted_at IS NULL
+      RETURNING id;
+    `;
 
     const result = await pool.query(query, [leadId, tenantId]);
     return result.rows[0] || null;

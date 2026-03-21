@@ -139,6 +139,8 @@ export async function createVisitHandler(
       ],
     );
 
+    const visit = result.rows[0];
+
     return res.status(201).json({
       success: true,
       message: "Visit created successfully",

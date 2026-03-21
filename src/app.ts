@@ -8,6 +8,7 @@ import { requireAuth } from "./common/auth";
 import { resolveTenant } from "./common/tenant";
 import { env } from "./config/env";
 
+import activityRouter from "./modules/activity/activity.routes";
 import tanentRouter from "./modules/admin/tenants.routes";
 import attendanceRouter from "./modules/attendance/attendance.routes";
 import contactsRouter from "./modules/contacts/contacts.routes";
@@ -71,6 +72,7 @@ export function createApp() {
   app.use("/v1/:slug/leaves", leaveRouter);
   app.use("/v1/:slug/imports", importsRouter);
   app.use("/v1/:slug/visits", visitsRouter);
+  app.use("/v1/:slug/activity", activityRouter);
   app.use(notFoundHandler);
   app.use(errorHandler);
 
