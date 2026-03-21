@@ -10,6 +10,80 @@ import {
   GetAttendanceMetricsSchema,
 } from "./attendance.schema";
 
+function getEndOfAttendanceDate(dateStr: string) {
+  return new Date(`${dateStr}T23:59:59.999`);
+}
+
+async function autoCloseStaleOpenSessions(
+  client: any,
+  tenantId: string,
+  userId: string,
+  today: string,
+) {
+  const staleSessionsResult = await client.query(
+    `
+    SELECT id, attendance_date, clock_in_at
+    FROM attendance_sessions
+    WHERE tenant_id = $1
+      AND user_id = $2
+      AND clock_out_at IS NULL
+      AND attendance_date < $3
+      AND deleted_at IS NULL
+    ORDER BY attendance_date ASC, session_no ASC
+    `,
+    [tenantId, userId, today],
+  );
+
+  for (const session of staleSessionsResult.rows) {
+    const forcedClockOutAt = getEndOfAttendanceDate(session.attendance_date);
+    const workedMinutes = Math.max(
+      Math.floor(
+        (forcedClockOutAt.getTime() - new Date(session.clock_in_at).getTime()) /
+          60000,
+      ),
+      0,
+    );
+
+    await client.query(
+      `
+      UPDATE attendance_sessions
+      SET
+        clock_out_at = $1,
+        worked_minutes = $2,
+        status = 'clocked_out',
+        updated_at = NOW(),
+        updated_by = $3
+      WHERE id = $4
+      `,
+      [forcedClockOutAt, workedMinutes, userId, session.id],
+    );
+
+    await client.query(
+      `
+      INSERT INTO attendance_activity_logs (
+        tenant_id,
+        attendance_session_id,
+        user_id,
+        action,
+        meta,
+        created_by
+      )
+      VALUES ($1, $2, $3, 'auto_clock_out', $4, $3)
+      `,
+      [
+        tenantId,
+        session.id,
+        userId,
+        JSON.stringify({
+          reason: "system_auto_close_previous_day_open_session",
+          forced_clock_out_at: forcedClockOutAt.toISOString(),
+          worked_minutes: workedMinutes,
+        }),
+      ],
+    );
+  }
+}
+
 function getTodayDateString() {
   const now = new Date();
   const year = now.getFullYear();
@@ -102,29 +176,56 @@ export async function clockInHandler(
     await client.query("BEGIN");
 
     const tenantId = getTenantId(req);
-    const userId = req.user?.sub;
+    const userId = req.user?.sub as string;
     const parsed = ClockInSchema.parse(req.body);
 
     const today = getTodayDateString();
 
-    const existingOpen = await client.query(
+    // 1) Purane open sessions auto-close
+    await autoCloseStaleOpenSessions(client, tenantId, userId, today);
+
+    // 2) Sirf aaj ka active session check karo
+    const existingOpenToday = await client.query(
       `
       SELECT id
       FROM attendance_sessions
       WHERE tenant_id = $1
         AND user_id = $2
+        AND attendance_date = $3
         AND clock_out_at IS NULL
         AND deleted_at IS NULL
       LIMIT 1
       `,
-      [tenantId, userId],
+      [tenantId, userId, today],
     );
 
-    if (existingOpen.rowCount) {
+    if (existingOpenToday.rowCount) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: "You are already clocked in.",
+        message: "You are already clocked in today.",
+      });
+    }
+
+    // 3) Agar day me sirf 1 hi clock-in allow karna hai to ye check rakho
+    const alreadyClockedToday = await client.query(
+      `
+      SELECT id
+      FROM attendance_sessions
+      WHERE tenant_id = $1
+        AND user_id = $2
+        AND attendance_date = $3
+        AND deleted_at IS NULL
+      LIMIT 1
+      `,
+      [tenantId, userId, today],
+    );
+
+    if (alreadyClockedToday.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: "You have already completed attendance for today.",
       });
     }
 
@@ -156,22 +257,22 @@ export async function clockInHandler(
 
     const insertResult = await client.query(
       `
-  INSERT INTO attendance_sessions (
-    tenant_id,
-    user_id,
-    attendance_date,
-    session_no,
-    clock_in_at,
-    late_by_minutes,
-    status,
-    source,
-    remarks,
-    created_by,
-    updated_by
-  )
-  VALUES ($1, $2, $3, $4, NOW(), $5, 'clocked_in', $6, $7, $8, $8)
-  RETURNING *
-  `,
+      INSERT INTO attendance_sessions (
+        tenant_id,
+        user_id,
+        attendance_date,
+        session_no,
+        clock_in_at,
+        late_by_minutes,
+        status,
+        source,
+        remarks,
+        created_by,
+        updated_by
+      )
+      VALUES ($1, $2, $3, $4, NOW(), $5, 'clocked_in', $6, $7, $8, $8)
+      RETURNING *
+      `,
       [
         tenantId,
         userId,
@@ -227,8 +328,13 @@ export async function clockOutHandler(
     await client.query("BEGIN");
 
     const tenantId = getTenantId(req);
-    const userId = req.user?.sub;
+    const userId = req.user?.sub as string;
     const parsed = ClockOutSchema.parse(req.body);
+
+    const today = getTodayDateString();
+
+    // Purane stale open sessions auto-close
+    await autoCloseStaleOpenSessions(client, tenantId, userId, today);
 
     const activeResult = await client.query(
       `
@@ -236,19 +342,20 @@ export async function clockOutHandler(
       FROM attendance_sessions
       WHERE tenant_id = $1
         AND user_id = $2
+        AND attendance_date = $3
         AND clock_out_at IS NULL
         AND deleted_at IS NULL
       ORDER BY created_at DESC
       LIMIT 1
       `,
-      [tenantId, userId],
+      [tenantId, userId, today],
     );
 
     if (!activeResult.rowCount) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: "No active clock-in session found.",
+        message: "No active clock-in session found for today.",
       });
     }
 
@@ -497,6 +604,11 @@ export async function getAttendanceCalendarHandler(
         status = "weekly_off";
       }
 
+      const maxLateByMinutes = sessions.reduce(
+        (max, row) => Math.max(max, Number(row.late_by_minutes || 0)),
+        0,
+      );
+
       return {
         date: dateStr,
         status,
@@ -504,7 +616,7 @@ export async function getAttendanceCalendarHandler(
         clock_in_at: firstClockIn,
         clock_out_at: lastClockOut,
         worked_minutes: totalWorkedMinutes,
-        late_by_minutes: 0,
+        late_by_minutes: maxLateByMinutes,
         request_label,
         request_status: request?.status || null,
       };
