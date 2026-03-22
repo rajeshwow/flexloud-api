@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextFunction, Request, Response } from "express";
+import { PoolClient } from "pg";
 import { z } from "zod";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
@@ -15,7 +16,7 @@ type CreateLeadInput = {
   createdBy: string | null;
   updatedBy: string | null;
   lead_number?: string | null;
-
+  lead_display_id?: string | null;
   first_name: string;
   last_name?: string | null;
   designation?: string | null;
@@ -92,6 +93,234 @@ function generateLeadNumber() {
   return `LEAD-${stamp}`;
 }
 
+async function generateLeadDisplayId(client: any) {
+  const result = await client.query(
+    `SELECT 'LD-' || LPAD(nextval('leads_display_id_seq')::text, 6, '0') AS lead_display_id`,
+  );
+
+  return result.rows[0]?.lead_display_id;
+}
+
+function normalizeForCompare(value: any) {
+  if (value === undefined || value === null || value === "") return null;
+  return value;
+}
+
+function extractPrimaryEmail(emails: any): string | null {
+  if (!Array.isArray(emails) || !emails.length) return null;
+  const primary = emails.find((item) => item?.primary);
+  return primary?.email ?? emails[0]?.email ?? null;
+}
+
+function formatDateTimeForLog(value: any) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatFieldValue(field: string, value: any) {
+  if (value === undefined || value === null || value === "") return "-";
+
+  if (field === "next_followup") {
+    return formatDateTimeForLog(value) || "-";
+  }
+
+  if (field === "emails") {
+    return extractPrimaryEmail(value) || "-";
+  }
+
+  if (field === "opportunity_amount") {
+    return String(value);
+  }
+
+  return String(value);
+}
+
+async function getUserNameById(
+  client: PoolClient,
+  tenantId: string,
+  userId?: string | null,
+) {
+  if (!userId) return null;
+
+  const result = await client.query(
+    `
+    SELECT
+      NULLIF(name, '') AS name,
+      NULLIF(
+        TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, ''))),
+        ''
+      ) AS full_name,
+      email
+    FROM users
+    WHERE id = $1
+      AND tenant_id = $2
+    LIMIT 1
+    `,
+    [userId, tenantId],
+  );
+
+  const user = result.rows[0];
+
+  return user?.name || user?.full_name || user?.email || null;
+}
+
+async function buildLeadChanges(
+  client: PoolClient,
+  tenantId: string,
+  oldLead: any,
+  input: UpdateLeadInput,
+) {
+  const changes: Array<{
+    field: string;
+    label: string;
+    old_value: any;
+    new_value: any;
+    old_display: string;
+    new_display: string;
+  }> = [];
+
+  const trackedFields: Array<{
+    key: keyof UpdateLeadInput | "emails";
+    label: string;
+  }> = [
+    { key: "first_name", label: "First Name" },
+    { key: "last_name", label: "Last Name" },
+    { key: "mobile", label: "Mobile" },
+    { key: "status", label: "Status" },
+    { key: "priority", label: "Priority" },
+    { key: "lead_source", label: "Source" },
+    { key: "assigned_to", label: "Assigned To" },
+    { key: "next_followup", label: "Next Followup" },
+    { key: "description", label: "Description" },
+    { key: "requirements", label: "Requirements" },
+    { key: "sales_stage", label: "Sales Stage" },
+    { key: "opportunity_amount", label: "Opportunity Amount" },
+    { key: "expected_close_date", label: "Expected Close Date" },
+    { key: "emails", label: "Email" },
+  ];
+
+  for (const field of trackedFields) {
+    const key = field.key;
+
+    if (key !== "emails" && input[key as keyof UpdateLeadInput] === undefined) {
+      continue;
+    }
+
+    let oldValue: any;
+    let newValue: any;
+
+    if (key === "emails") {
+      if (input.emails === undefined) continue;
+      oldValue = oldLead.emails ?? null;
+      newValue = input.emails ?? null;
+    } else {
+      oldValue = oldLead[key] ?? null;
+      newValue = input[key as keyof UpdateLeadInput] ?? null;
+    }
+
+    const oldComparable =
+      key === "emails"
+        ? extractPrimaryEmail(oldValue)
+        : normalizeForCompare(oldValue);
+
+    const newComparable =
+      key === "emails"
+        ? extractPrimaryEmail(newValue)
+        : normalizeForCompare(newValue);
+
+    if (String(oldComparable ?? "") === String(newComparable ?? "")) {
+      continue;
+    }
+
+    let oldDisplay = formatFieldValue(String(key), oldValue);
+    let newDisplay = formatFieldValue(String(key), newValue);
+
+    if (key === "assigned_to") {
+      const oldName = await getUserNameById(client, tenantId, oldValue);
+      const newName = await getUserNameById(client, tenantId, newValue);
+
+      oldDisplay = oldName || (oldValue ? String(oldValue) : "-");
+      newDisplay = newName || (newValue ? String(newValue) : "-");
+    }
+
+    changes.push({
+      field: String(key),
+      label: field.label,
+      old_value: oldValue,
+      new_value: newValue,
+      old_display: oldDisplay,
+      new_display: newDisplay,
+    });
+  }
+
+  return changes;
+}
+
+function getLeadUpdateActivityMeta(changes: Array<any>) {
+  if (!changes.length) {
+    return {
+      actionType: "updated",
+      title: "Lead updated",
+      description: "Lead details updated",
+    };
+  }
+
+  if (changes.length === 1) {
+    const change = changes[0];
+
+    switch (change.field) {
+      case "status":
+        return {
+          actionType: "status_changed",
+          title: "Status changed",
+          description: `${change.label}: ${change.old_display} → ${change.new_display}`,
+        };
+
+      case "assigned_to":
+        return {
+          actionType: "assignment_changed",
+          title: "Lead reassigned",
+          description: `${change.label}: ${change.old_display} → ${change.new_display}`,
+        };
+
+      case "next_followup":
+        return {
+          actionType: "followup_changed",
+          title: "Followup rescheduled",
+          description: `${change.label}: ${change.old_display} → ${change.new_display}`,
+        };
+
+      case "emails":
+        return {
+          actionType: "email_changed",
+          title: "Email updated",
+          description: `${change.label}: ${change.old_display} → ${change.new_display}`,
+        };
+
+      default:
+        return {
+          actionType: "updated",
+          title: `${change.label} updated`,
+          description: `${change.label}: ${change.old_display} → ${change.new_display}`,
+        };
+    }
+  }
+
+  return {
+    actionType: "updated",
+    title: "Lead updated",
+    description: `${changes.length} fields updated`,
+  };
+}
+
 export const leadsService = {
   async create(input: CreateLeadInput) {
     const client = await pool.connect();
@@ -100,6 +329,8 @@ export const leadsService = {
       await client.query("BEGIN");
 
       const leadId = randomUUID();
+      const leadDisplayId =
+        input.lead_display_id || (await generateLeadDisplayId(client));
       const leadNumber = input.lead_number || generateLeadNumber();
 
       const query = `
@@ -107,6 +338,7 @@ export const leadsService = {
           id,
           tenant_id,
           lead_number,
+          lead_display_id,
           first_name,
           last_name,
           designation,
@@ -151,7 +383,7 @@ export const leadsService = {
           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
           $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
           $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
-          $31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42
+          $31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43
         )
         RETURNING *;
       `;
@@ -160,6 +392,7 @@ export const leadsService = {
         leadId,
         input.tenantId,
         leadNumber,
+        leadDisplayId,
         input.first_name,
         input.last_name ?? null,
         input.designation ?? null,
@@ -214,6 +447,7 @@ export const leadsService = {
           description: `Lead ${newLead.first_name ?? ""} ${newLead.last_name ?? ""} created`,
           metadata: {
             lead_number: newLead.lead_number,
+            lead_display_id: newLead.lead_display_id,
             status: newLead.status,
           },
           createdById: input.createdBy,
@@ -247,7 +481,9 @@ export const leadsService = {
         OR l.last_name ILIKE $${idx}
         OR l.mobile ILIKE $${idx}
         OR l.lead_number ILIKE $${idx}
+        OR l.lead_display_id ILIKE $${idx}
         OR l.organization_name ILIKE $${idx}
+        OR CAST(l.emails AS TEXT) ILIKE $${idx}
       )
     `;
       values.push(`%${input.search.trim()}%`);
@@ -267,27 +503,36 @@ export const leadsService = {
     }
 
     const listQuery = `
-      SELECT
-        l.*,
-        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
-      FROM leads l
-      LEFT JOIN users u ON u.id = l.assigned_to
-      ${whereClause}
-      ORDER BY l.created_at DESC
-      LIMIT $${idx} OFFSET $${idx + 1};
-    `;
+    SELECT
+      l.*,
+      COALESCE(
+        NULLIF(u.name, ''),
+        NULLIF(
+          TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
+          ''
+        ),
+        u.email
+      ) AS assigned_to_name
+    FROM leads l
+    LEFT JOIN users u
+      ON u.id = l.assigned_to
+     AND u.tenant_id = l.tenant_id
+    ${whereClause}
+    ORDER BY l.created_at DESC
+    LIMIT $${idx} OFFSET $${idx + 1};
+  `;
 
     const countQuery = `
-      SELECT COUNT(*)::int AS total
-      FROM leads l
-      ${whereClause};
-    `;
+    SELECT COUNT(*)::int AS total
+    FROM leads l
+    ${whereClause};
+  `;
 
     const listValues = [...values, limit, offset];
 
     const [listResult, countResult] = await Promise.all([
       pool.query(listQuery, listValues),
-      pool.query(countQuery, values),
+      pool.query<{ total: number }>(countQuery, values),
     ]);
 
     const total = countResult.rows[0]?.total ?? 0;
@@ -305,16 +550,25 @@ export const leadsService = {
 
   async getById(tenantId: string, leadId: string) {
     const query = `
-      SELECT
-        l.*,
-        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS assigned_to_name
-      FROM leads l
-      LEFT JOIN users u ON u.id = l.assigned_to
-      WHERE l.id = $1
-        AND l.tenant_id = $2
-        AND l.deleted_at IS NULL
-      LIMIT 1;
-    `;
+  SELECT
+    l.*,
+    COALESCE(
+      NULLIF(u.name, ''),
+      NULLIF(
+        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
+        ''
+      ),
+      u.email
+    ) AS assigned_to_name
+  FROM leads l
+  LEFT JOIN users u
+    ON u.id = l.assigned_to
+   AND u.tenant_id = l.tenant_id
+  WHERE l.id = $1
+    AND l.tenant_id = $2
+    AND l.deleted_at IS NULL
+  LIMIT 1;
+`;
 
     const result = await pool.query(query, [leadId, tenantId]);
     return result.rows[0] || null;
@@ -325,6 +579,25 @@ export const leadsService = {
 
     try {
       await client.query("BEGIN");
+
+      const existingResult = await client.query(
+        `
+      SELECT *
+      FROM leads
+      WHERE id = $1
+        AND tenant_id = $2
+        AND deleted_at IS NULL
+      LIMIT 1
+      `,
+        [input.leadId, input.tenantId],
+      );
+
+      const existingLead = existingResult.rows[0] || null;
+
+      if (!existingLead) {
+        await client.query("ROLLBACK");
+        return null;
+      }
 
       const fields: string[] = [];
       const values: Array<string | number | null | object> = [];
@@ -383,13 +656,13 @@ export const leadsService = {
       fields.push(`updated_at = NOW()`);
 
       const query = `
-        UPDATE leads
-        SET ${fields.join(", ")}
-        WHERE id = $${idx}
-          AND tenant_id = $${idx + 1}
-          AND deleted_at IS NULL
-        RETURNING *;
-      `;
+      UPDATE leads
+      SET ${fields.join(", ")}
+      WHERE id = $${idx}
+        AND tenant_id = $${idx + 1}
+        AND deleted_at IS NULL
+      RETURNING *;
+    `;
 
       values.push(input.leadId, input.tenantId);
 
@@ -401,18 +674,26 @@ export const leadsService = {
         return null;
       }
 
+      const changes = await buildLeadChanges(
+        client,
+        input.tenantId,
+        existingLead,
+        input,
+      );
+      const activityMeta = getLeadUpdateActivityMeta(changes);
+
       await createActivityLog(
         {
           tenantId: input.tenantId,
           entityType: "lead",
           entityId: input.leadId,
-          actionType: "updated",
-          title: "Lead updated",
-          description: "Lead details updated",
+          actionType: activityMeta.actionType,
+          title: activityMeta.title,
+          description: activityMeta.description,
           metadata: {
-            updated_fields: Object.keys(payload).filter(
-              (key) => payload[key] !== undefined,
-            ),
+            changes,
+            updated_fields: changes.map((item) => item.field),
+            remarks: input.add_description ?? null,
           },
           createdById: input.updatedBy,
         },
