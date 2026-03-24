@@ -15,6 +15,7 @@ import contactsRouter from "./modules/contacts/contacts.routes";
 import importsRouter from "./modules/imports/imports.routes";
 import leadsRouter from "./modules/leads/leads.route";
 import leaveRouter from "./modules/leaves/leave.routes";
+import masterRouter from "./modules/masters/masters.routes";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import productsRouter from "./modules/products/products.routes";
@@ -73,6 +74,7 @@ export function createApp() {
   app.use("/v1/:slug/imports", importsRouter);
   app.use("/v1/:slug/visits", visitsRouter);
   app.use("/v1/:slug/activity", activityRouter);
+  app.use("/v1/:slug/masters", masterRouter);
   app.use(notFoundHandler);
   app.use(errorHandler);
 

@@ -36,16 +36,16 @@ type CreateLeadInput = {
   organization_name?: string | null;
   dealer_organization?: string | null;
 
-  status?: string;
+  status_id?: string | null;
   product_category: string;
-  priority: string;
+  priority_id?: string | null;
 
   requirements?: string | null;
 
   next_followup?: string | null;
   followup?: string | null;
   followup_type?: string | null;
-  lead_source?: string | null;
+  source_id?: string | null;
 
   add_description?: string | null;
   description?: string | null;
@@ -84,7 +84,7 @@ type GetAllLeadsInput = {
   page: number;
   limit: number;
   search?: string;
-  status?: string;
+  status_id?: string;
   assigned_to?: string;
 };
 
@@ -93,7 +93,7 @@ function generateLeadNumber() {
   return `LEAD-${stamp}`;
 }
 
-async function generateLeadDisplayId(client: any) {
+async function generateLeadDisplayId(client: PoolClient) {
   const result = await client.query(
     `SELECT 'LD-' || LPAD(nextval('leads_display_id_seq')::text, 6, '0') AS lead_display_id`,
   );
@@ -128,7 +128,7 @@ function formatDateTimeForLog(value: any) {
 function formatFieldValue(field: string, value: any) {
   if (value === undefined || value === null || value === "") return "-";
 
-  if (field === "next_followup") {
+  if (field === "next_followup" || field === "expected_close_date") {
     return formatDateTimeForLog(value) || "-";
   }
 
@@ -172,6 +172,28 @@ async function getUserNameById(
   return user?.name || user?.full_name || user?.email || null;
 }
 
+async function getMasterLabelById(
+  client: PoolClient,
+  tenantId: string,
+  masterValueId?: string | null,
+) {
+  if (!masterValueId) return null;
+
+  const result = await client.query(
+    `
+    SELECT label
+    FROM master_values
+    WHERE id = $1
+      AND tenant_id = $2
+      AND deleted_at IS NULL
+    LIMIT 1
+    `,
+    [masterValueId, tenantId],
+  );
+
+  return result.rows[0]?.label || null;
+}
+
 async function buildLeadChanges(
   client: PoolClient,
   tenantId: string,
@@ -194,9 +216,9 @@ async function buildLeadChanges(
     { key: "first_name", label: "First Name" },
     { key: "last_name", label: "Last Name" },
     { key: "mobile", label: "Mobile" },
-    { key: "status", label: "Status" },
-    { key: "priority", label: "Priority" },
-    { key: "lead_source", label: "Source" },
+    { key: "status_id", label: "Status" },
+    { key: "priority_id", label: "Priority" },
+    { key: "source_id", label: "Source" },
     { key: "assigned_to", label: "Assigned To" },
     { key: "next_followup", label: "Next Followup" },
     { key: "description", label: "Description" },
@@ -251,6 +273,14 @@ async function buildLeadChanges(
       newDisplay = newName || (newValue ? String(newValue) : "-");
     }
 
+    if (key === "status_id" || key === "priority_id" || key === "source_id") {
+      const oldLabel = await getMasterLabelById(client, tenantId, oldValue);
+      const newLabel = await getMasterLabelById(client, tenantId, newValue);
+
+      oldDisplay = oldLabel || (oldValue ? String(oldValue) : "-");
+      newDisplay = newLabel || (newValue ? String(newValue) : "-");
+    }
+
     changes.push({
       field: String(key),
       label: field.label,
@@ -277,7 +307,7 @@ function getLeadUpdateActivityMeta(changes: Array<any>) {
     const change = changes[0];
 
     switch (change.field) {
-      case "status":
+      case "status_id":
         return {
           actionType: "status_changed",
           title: "Status changed",
@@ -321,6 +351,65 @@ function getLeadUpdateActivityMeta(changes: Array<any>) {
   };
 }
 
+async function getLeadByIdInternal(
+  executor: PoolClient | typeof pool,
+  tenantId: string,
+  leadId: string,
+) {
+  const query = `
+    SELECT
+      l.*,
+      COALESCE(
+        NULLIF(u.name, ''),
+        NULLIF(
+          TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
+          ''
+        ),
+        u.email
+      ) AS assigned_to_name,
+
+      status_mv.label AS status_label,
+      status_mv.value AS status_value,
+      status_mv.color AS status_color,
+
+      priority_mv.label AS priority_label,
+      priority_mv.value AS priority_value,
+      priority_mv.color AS priority_color,
+
+      source_mv.label AS source_label,
+      source_mv.value AS source_value,
+      source_mv.color AS source_color
+
+    FROM leads l
+    LEFT JOIN users u
+      ON u.id = l.assigned_to
+     AND u.tenant_id = l.tenant_id
+
+    LEFT JOIN master_values status_mv
+      ON status_mv.id = l.status_id
+     AND status_mv.tenant_id = l.tenant_id
+     AND status_mv.deleted_at IS NULL
+
+    LEFT JOIN master_values priority_mv
+      ON priority_mv.id = l.priority_id
+     AND priority_mv.tenant_id = l.tenant_id
+     AND priority_mv.deleted_at IS NULL
+
+    LEFT JOIN master_values source_mv
+      ON source_mv.id = l.source_id
+     AND source_mv.tenant_id = l.tenant_id
+     AND source_mv.deleted_at IS NULL
+
+    WHERE l.id = $1
+      AND l.tenant_id = $2
+      AND l.deleted_at IS NULL
+    LIMIT 1;
+  `;
+
+  const result = await executor.query(query, [leadId, tenantId]);
+  return result.rows[0] || null;
+}
+
 export const leadsService = {
   async create(input: CreateLeadInput) {
     const client = await pool.connect();
@@ -348,14 +437,14 @@ export const leadsService = {
           organization_name,
           emails,
           dealer_organization,
-          status,
+          status_id,
           product_category,
-          priority,
+          priority_id,
           requirements,
           next_followup,
           followup,
           followup_type,
-          lead_source,
+          source_id,
           add_description,
           description,
           referred_by,
@@ -402,14 +491,14 @@ export const leadsService = {
         input.organization_name ?? null,
         input.emails ? JSON.stringify(input.emails) : null,
         input.dealer_organization ?? null,
-        input.status ?? "new",
+        input.status_id ?? null,
         input.product_category,
-        input.priority,
+        input.priority_id ?? null,
         input.requirements ?? null,
         input.next_followup ?? null,
         input.followup ?? null,
         input.followup_type ?? null,
-        input.lead_source ?? null,
+        input.source_id ?? null,
         input.add_description ?? null,
         input.description ?? null,
         input.referred_by ?? null,
@@ -448,7 +537,7 @@ export const leadsService = {
           metadata: {
             lead_number: newLead.lead_number,
             lead_display_id: newLead.lead_display_id,
-            status: newLead.status,
+            status_id: newLead.status_id,
           },
           createdById: input.createdBy,
         },
@@ -456,7 +545,7 @@ export const leadsService = {
       );
 
       await client.query("COMMIT");
-      return newLead;
+      return await getLeadByIdInternal(pool, input.tenantId, newLead.id);
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -476,23 +565,23 @@ export const leadsService = {
 
     if (input.search?.trim()) {
       whereClause += `
-      AND (
-        l.first_name ILIKE $${idx}
-        OR l.last_name ILIKE $${idx}
-        OR l.mobile ILIKE $${idx}
-        OR l.lead_number ILIKE $${idx}
-        OR l.lead_display_id ILIKE $${idx}
-        OR l.organization_name ILIKE $${idx}
-        OR CAST(l.emails AS TEXT) ILIKE $${idx}
-      )
-    `;
+        AND (
+          l.first_name ILIKE $${idx}
+          OR l.last_name ILIKE $${idx}
+          OR l.mobile ILIKE $${idx}
+          OR l.lead_number ILIKE $${idx}
+          OR l.lead_display_id ILIKE $${idx}
+          OR l.organization_name ILIKE $${idx}
+          OR CAST(l.emails AS TEXT) ILIKE $${idx}
+        )
+      `;
       values.push(`%${input.search.trim()}%`);
       idx++;
     }
 
-    if (input.status) {
-      whereClause += ` AND l.status = $${idx}`;
-      values.push(input.status);
+    if (input.status_id) {
+      whereClause += ` AND l.status_id = $${idx}`;
+      values.push(input.status_id);
       idx++;
     }
 
@@ -503,30 +592,59 @@ export const leadsService = {
     }
 
     const listQuery = `
-    SELECT
-      l.*,
-      COALESCE(
-        NULLIF(u.name, ''),
-        NULLIF(
-          TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
-          ''
-        ),
-        u.email
-      ) AS assigned_to_name
-    FROM leads l
-    LEFT JOIN users u
-      ON u.id = l.assigned_to
-     AND u.tenant_id = l.tenant_id
-    ${whereClause}
-    ORDER BY l.created_at DESC
-    LIMIT $${idx} OFFSET $${idx + 1};
-  `;
+      SELECT
+        l.*,
+        COALESCE(
+          NULLIF(u.name, ''),
+          NULLIF(
+            TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
+            ''
+          ),
+          u.email
+        ) AS assigned_to_name,
+
+        status_mv.label AS status_label,
+        status_mv.value AS status_value,
+        status_mv.color AS status_color,
+
+        priority_mv.label AS priority_label,
+        priority_mv.value AS priority_value,
+        priority_mv.color AS priority_color,
+
+        source_mv.label AS source_label,
+        source_mv.value AS source_value,
+        source_mv.color AS source_color
+
+      FROM leads l
+      LEFT JOIN users u
+        ON u.id = l.assigned_to
+       AND u.tenant_id = l.tenant_id
+
+      LEFT JOIN master_values status_mv
+        ON status_mv.id = l.status_id
+       AND status_mv.tenant_id = l.tenant_id
+       AND status_mv.deleted_at IS NULL
+
+      LEFT JOIN master_values priority_mv
+        ON priority_mv.id = l.priority_id
+       AND priority_mv.tenant_id = l.tenant_id
+       AND priority_mv.deleted_at IS NULL
+
+      LEFT JOIN master_values source_mv
+        ON source_mv.id = l.source_id
+       AND source_mv.tenant_id = l.tenant_id
+       AND source_mv.deleted_at IS NULL
+
+      ${whereClause}
+      ORDER BY l.created_at DESC
+      LIMIT $${idx} OFFSET $${idx + 1};
+    `;
 
     const countQuery = `
-    SELECT COUNT(*)::int AS total
-    FROM leads l
-    ${whereClause};
-  `;
+      SELECT COUNT(*)::int AS total
+      FROM leads l
+      ${whereClause};
+    `;
 
     const listValues = [...values, limit, offset];
 
@@ -549,29 +667,7 @@ export const leadsService = {
   },
 
   async getById(tenantId: string, leadId: string) {
-    const query = `
-  SELECT
-    l.*,
-    COALESCE(
-      NULLIF(u.name, ''),
-      NULLIF(
-        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
-        ''
-      ),
-      u.email
-    ) AS assigned_to_name
-  FROM leads l
-  LEFT JOIN users u
-    ON u.id = l.assigned_to
-   AND u.tenant_id = l.tenant_id
-  WHERE l.id = $1
-    AND l.tenant_id = $2
-    AND l.deleted_at IS NULL
-  LIMIT 1;
-`;
-
-    const result = await pool.query(query, [leadId, tenantId]);
-    return result.rows[0] || null;
+    return await getLeadByIdInternal(pool, tenantId, leadId);
   },
 
   async update(input: UpdateLeadInput) {
@@ -582,13 +678,13 @@ export const leadsService = {
 
       const existingResult = await client.query(
         `
-      SELECT *
-      FROM leads
-      WHERE id = $1
-        AND tenant_id = $2
-        AND deleted_at IS NULL
-      LIMIT 1
-      `,
+        SELECT *
+        FROM leads
+        WHERE id = $1
+          AND tenant_id = $2
+          AND deleted_at IS NULL
+        LIMIT 1
+        `,
         [input.leadId, input.tenantId],
       );
 
@@ -614,14 +710,14 @@ export const leadsService = {
         organization_name: input.organization_name,
         emails: input.emails ? JSON.stringify(input.emails) : input.emails,
         dealer_organization: input.dealer_organization,
-        status: input.status,
+        status_id: input.status_id,
         product_category: input.product_category,
-        priority: input.priority,
+        priority_id: input.priority_id,
         requirements: input.requirements,
         next_followup: input.next_followup,
         followup: input.followup,
         followup_type: input.followup_type,
-        lead_source: input.lead_source,
+        source_id: input.source_id,
         add_description: input.add_description,
         description: input.description,
         referred_by: input.referred_by,
@@ -656,13 +752,13 @@ export const leadsService = {
       fields.push(`updated_at = NOW()`);
 
       const query = `
-      UPDATE leads
-      SET ${fields.join(", ")}
-      WHERE id = $${idx}
-        AND tenant_id = $${idx + 1}
-        AND deleted_at IS NULL
-      RETURNING *;
-    `;
+        UPDATE leads
+        SET ${fields.join(", ")}
+        WHERE id = $${idx}
+          AND tenant_id = $${idx + 1}
+          AND deleted_at IS NULL
+        RETURNING *;
+      `;
 
       values.push(input.leadId, input.tenantId);
 
@@ -701,7 +797,7 @@ export const leadsService = {
       );
 
       await client.query("COMMIT");
-      return updatedLead;
+      return await getLeadByIdInternal(pool, input.tenantId, updatedLead.id);
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -766,7 +862,7 @@ export async function getLeadsHandler(
       page: query.page,
       limit: query.limit,
       search: query.search,
-      status: query.status,
+      status_id: query.status_id,
       assigned_to: query.assigned_to,
     });
 

@@ -23,17 +23,16 @@ export const CreateLeadSchema = z.object({
   organization_name: z.string().optional().nullable(),
   dealer_organization: z.string().optional().nullable(),
 
-  status: z.string().optional().default("new"),
+  status_id: z.string().uuid().optional(),
   product_category: z.string().min(1, "Product category is required"),
-  priority: z.string().min(1, "Priority is required"),
+  priority_id: z.string().uuid().optional(),
 
   requirements: z.string().optional().nullable(),
 
   next_followup: z.string().optional().nullable(),
   followup: z.string().optional().nullable(),
   followup_type: z.string().optional().nullable(),
-  lead_source: z.string().optional().nullable(),
-
+  source_id: z.string().uuid().optional(),
   add_description: z.string().optional().nullable(),
   description: z.string().optional().nullable(),
   referred_by: z.string().optional().nullable(),
@@ -66,6 +65,6 @@ export const GetLeadsSchema = z.object({
   page: z.coerce.number().min(1).default(1),
   limit: z.coerce.number().min(1).max(100).default(10),
   search: z.string().optional(),
-  status: z.string().optional(),
+  status_id: z.string().uuid().optional(),
   assigned_to: z.string().uuid().optional(),
 });
