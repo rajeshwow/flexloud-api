@@ -19,6 +19,7 @@ import masterRouter from "./modules/masters/masters.routes";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import productsRouter from "./modules/products/products.routes";
+import quotesRouter from "./modules/quotes/quotes.routes";
 import tasksRouter from "./modules/tasks/tasks.routes";
 import usersRouter from "./modules/users/users.routes";
 import visitsRouter from "./modules/visits/visits.routes";
@@ -75,6 +76,7 @@ export function createApp() {
   app.use("/v1/:slug/visits", visitsRouter);
   app.use("/v1/:slug/activity", activityRouter);
   app.use("/v1/:slug/masters", masterRouter);
+  app.use("/v1/:slug/quotes", quotesRouter);
   app.use(notFoundHandler);
   app.use(errorHandler);
 
