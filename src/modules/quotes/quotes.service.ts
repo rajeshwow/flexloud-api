@@ -3,6 +3,9 @@ import { NextFunction, Request, Response } from "express";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 
+// ============================
+// CREATE
+// ============================
 export async function createQuoteHandler(
   req: Request,
   res: Response,
@@ -34,7 +37,6 @@ export async function createQuoteHandler(
     await client.query("BEGIN");
 
     const quoteId = randomUUID();
-
     const quoteNumber = `QT-${Date.now()}`;
 
     await client.query(
@@ -82,9 +84,9 @@ export async function createQuoteHandler(
         INSERT INTO quote_line_items (
           id, tenant_id, quote_id,
           item_type, product_name, service_name,
-          quantity, sale_price, line_total
+          quantity, sale_price, line_total, sort_order
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         `,
         [
           randomUUID(),
@@ -96,6 +98,7 @@ export async function createQuoteHandler(
           item.quantity,
           item.sale_price,
           item.line_total,
+          item.sort_order || 0,
         ],
       );
     }
@@ -111,6 +114,9 @@ export async function createQuoteHandler(
   }
 }
 
+// ============================
+// LIST (🔥 FIXED)
+// ============================
 export async function getQuotesHandler(
   req: Request,
   res: Response,
@@ -119,23 +125,73 @@ export async function getQuotesHandler(
   try {
     const tenantId = getTenantId(req);
 
-    const result = await pool.query(
-      `
-      SELECT *
-      FROM quotes
-      WHERE tenant_id = $1
-        AND deleted_at IS NULL
-      ORDER BY created_at DESC
-      `,
-      [tenantId],
-    );
+    const {
+      search,
+      page = 1,
+      limit = 10,
+      stage,
+      organization_id,
+      assigned_to,
+    } = req.query as any;
 
-    res.json({ data: result.rows });
+    const offset = (Number(page) - 1) * Number(limit);
+
+    const values: any[] = [tenantId];
+    let where = `WHERE q.tenant_id = $1 AND q.deleted_at IS NULL`;
+
+    if (search) {
+      values.push(`%${search}%`);
+      where += ` AND (q.title ILIKE $${values.length} OR q.quote_number ILIKE $${values.length})`;
+    }
+
+    if (stage) {
+      values.push(stage);
+      where += ` AND q.quote_stage = $${values.length}`;
+    }
+
+    if (organization_id) {
+      values.push(organization_id);
+      where += ` AND q.organization_id = $${values.length}`;
+    }
+
+    if (assigned_to) {
+      values.push(assigned_to);
+      where += ` AND q.assigned_to = $${values.length}`;
+    }
+
+    const dataQuery = `
+      SELECT q.*
+      FROM quotes q
+      ${where}
+      ORDER BY q.created_at DESC
+      LIMIT $${values.length + 1}
+      OFFSET $${values.length + 2}
+    `;
+
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM quotes q
+      ${where}
+    `;
+
+    const dataResult = await pool.query(dataQuery, [...values, limit, offset]);
+
+    const countResult = await pool.query(countQuery, values);
+
+    res.json({
+      data: dataResult.rows,
+      total: Number(countResult.rows[0].total),
+      page: Number(page),
+      limit: Number(limit),
+    });
   } catch (err) {
     next(err);
   }
 }
 
+// ============================
+// DETAILS (🔥 FIXED)
+// ============================
 export async function getQuoteByIdHandler(
   req: Request,
   res: Response,
@@ -145,33 +201,47 @@ export async function getQuoteByIdHandler(
     const tenantId = getTenantId(req);
     const { id } = req.params;
 
-    const quote = await pool.query(
+    const quoteResult = await pool.query(
       `
       SELECT *
       FROM quotes
-      WHERE id = $1 AND tenant_id = $2
+      WHERE id = $1
+        AND tenant_id = $2
+        AND deleted_at IS NULL
       `,
       [id, tenantId],
     );
 
-    const items = await pool.query(
+    if (!quoteResult.rowCount) {
+      return res.status(404).json({
+        message: "Quote not found",
+      });
+    }
+
+    const itemsResult = await pool.query(
       `
       SELECT *
       FROM quote_line_items
-      WHERE quote_id = $1 AND tenant_id = $2
+      WHERE quote_id = $1
+        AND tenant_id = $2
+        AND deleted_at IS NULL
+      ORDER BY sort_order ASC
       `,
       [id, tenantId],
     );
 
     res.json({
-      ...quote.rows[0],
-      line_items: items.rows,
+      ...quoteResult.rows[0],
+      line_items: itemsResult.rows,
     });
   } catch (err) {
     next(err);
   }
 }
 
+// ============================
+// UPDATE (🔥 FIXED)
+// ============================
 export async function updateQuoteHandler(
   req: Request,
   res: Response,
@@ -181,10 +251,18 @@ export async function updateQuoteHandler(
 
   try {
     const tenantId = getTenantId(req);
+    const userId = req.user?.sub;
     const { id } = req.params;
 
     const {
       title,
+      quotation_date,
+      valid_until,
+      quote_stage,
+      organization_id,
+      contact_id,
+      opportunity_id,
+      assigned_to,
       subtotal,
       discount,
       total,
@@ -195,34 +273,71 @@ export async function updateQuoteHandler(
 
     await client.query("BEGIN");
 
+    const existing = await client.query(
+      `SELECT id FROM quotes WHERE id = $1 AND tenant_id = $2`,
+      [id, tenantId],
+    );
+
+    if (!existing.rowCount) {
+      throw new Error("Quote not found");
+    }
+
     await client.query(
       `
       UPDATE quotes
-      SET title = $1,
-          subtotal = $2,
-          discount = $3,
-          total = $4,
-          tax = $5,
-          grand_total = $6
-      WHERE id = $7 AND tenant_id = $8
+      SET
+        title = $1,
+        quotation_date = $2,
+        valid_until = $3,
+        quote_stage = $4,
+        organization_id = $5,
+        contact_id = $6,
+        opportunity_id = $7,
+        assigned_to = $8,
+        subtotal = $9,
+        discount = $10,
+        total = $11,
+        tax = $12,
+        grand_total = $13,
+        updated_by_id = $14
+      WHERE id = $15 AND tenant_id = $16
       `,
-      [title, subtotal, discount, total, tax, grand_total, id, tenantId],
+      [
+        title,
+        quotation_date,
+        valid_until,
+        quote_stage,
+        organization_id,
+        contact_id,
+        opportunity_id,
+        assigned_to,
+        subtotal,
+        discount,
+        total,
+        tax,
+        grand_total,
+        userId,
+        id,
+        tenantId,
+      ],
     );
 
+    // delete old items
     await client.query(
       `DELETE FROM quote_line_items WHERE quote_id = $1 AND tenant_id = $2`,
       [id, tenantId],
     );
 
+    // insert new
     for (const item of line_items) {
       await client.query(
         `
         INSERT INTO quote_line_items (
           id, tenant_id, quote_id,
           item_type, product_name, service_name,
-          quantity, sale_price, line_total
+          quantity, sale_price, line_total, sort_order
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         `,
         [
           randomUUID(),
@@ -234,6 +349,7 @@ export async function updateQuoteHandler(
           item.quantity,
           item.sale_price,
           item.line_total,
+          item.sort_order || 0,
         ],
       );
     }

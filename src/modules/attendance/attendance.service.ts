@@ -10,8 +10,21 @@ import {
   GetAttendanceMetricsSchema,
 } from "./attendance.schema";
 
-function getEndOfAttendanceDate(dateStr: string) {
-  return new Date(`${dateStr}T23:59:59.999`);
+function getEndOfAttendanceDate(dateInput: string | Date) {
+  let baseDate: Date;
+
+  if (dateInput instanceof Date) {
+    baseDate = new Date(dateInput);
+  } else {
+    baseDate = new Date(`${dateInput}T00:00:00`);
+  }
+
+  if (Number.isNaN(baseDate.getTime())) {
+    throw new Error(`Invalid attendance date: ${String(dateInput)}`);
+  }
+
+  baseDate.setHours(23, 59, 59, 999);
+  return baseDate;
 }
 
 async function autoCloseStaleOpenSessions(
@@ -35,7 +48,15 @@ async function autoCloseStaleOpenSessions(
   );
 
   for (const session of staleSessionsResult.rows) {
+    console.log("stale session attendance_date =>", session.attendance_date);
+
     const forcedClockOutAt = getEndOfAttendanceDate(session.attendance_date);
+
+    if (Number.isNaN(forcedClockOutAt.getTime())) {
+      throw new Error(
+        `Invalid attendance_date for stale session ${session.id}: ${session.attendance_date}`,
+      );
+    }
     const workedMinutes = Math.max(
       Math.floor(
         (forcedClockOutAt.getTime() - new Date(session.clock_in_at).getTime()) /
@@ -60,22 +81,23 @@ async function autoCloseStaleOpenSessions(
 
     await client.query(
       `
-      INSERT INTO attendance_activity_logs (
-        tenant_id,
-        attendance_session_id,
-        user_id,
-        action,
-        meta,
-        created_by
-      )
-      VALUES ($1, $2, $3, 'auto_clock_out', $4, $3)
-      `,
+  INSERT INTO attendance_activity_logs (
+    tenant_id,
+    attendance_session_id,
+    user_id,
+    action,
+    meta,
+    created_by
+  )
+  VALUES ($1, $2, $3, 'clock_out', $4, $3)
+  `,
       [
         tenantId,
         session.id,
         userId,
         JSON.stringify({
           reason: "system_auto_close_previous_day_open_session",
+          auto_closed: true,
           forced_clock_out_at: forcedClockOutAt.toISOString(),
           worked_minutes: workedMinutes,
         }),
