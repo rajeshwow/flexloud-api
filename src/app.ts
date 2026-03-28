@@ -11,6 +11,7 @@ import { env } from "./config/env";
 import activityRouter from "./modules/activity/activity.routes";
 import tanentRouter from "./modules/admin/tenants.routes";
 import aiAssistantRouter from "./modules/ai-assistant/ai-assistant.routes";
+import aiInsightsRouter from "./modules/ai-insights/ai-insights.routes";
 import attendanceRouter from "./modules/attendance/attendance.routes";
 import contactsRouter from "./modules/contacts/contacts.routes";
 import importsRouter from "./modules/imports/imports.routes";
@@ -81,6 +82,7 @@ export function createApp() {
   app.use("/v1/:slug/quotes", quotesRouter);
   app.use("/v1/:slug/interactions", interactionsRouter);
   app.use("/v1/:slug/ai-assistant", aiAssistantRouter);
+  app.use("/v1/:slug/ai-insights", aiInsightsRouter);
   app.use(notFoundHandler);
   app.use(errorHandler);
 
