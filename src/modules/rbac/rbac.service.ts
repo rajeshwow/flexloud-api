@@ -400,6 +400,98 @@ export const rbacService = {
       client.release();
     }
   },
+  async assignUsersToRole(
+    tenantId: string,
+    roleId: string,
+    actorUserId: string,
+    body: unknown,
+  ) {
+    const payload = z
+      .object({
+        user_ids: z.array(z.string().uuid()).default([]),
+      })
+      .parse(body);
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const roleRes = await client.query(
+        `
+      SELECT id, tenant_id
+      FROM roles
+      WHERE id = $1 AND tenant_id = $2
+      `,
+        [roleId, tenantId],
+      );
+
+      if (!roleRes.rows[0]) {
+        const err: any = new Error("Role not found");
+        err.statusCode = 404;
+        throw err;
+      }
+
+      if (payload.user_ids.length > 0) {
+        const userCheckRes = await client.query(
+          `
+        SELECT id
+        FROM users
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        `,
+          [tenantId, payload.user_ids],
+        );
+
+        if (userCheckRes.rows.length !== payload.user_ids.length) {
+          const err: any = new Error("One or more users are invalid");
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+
+      await client.query(
+        `
+      DELETE FROM user_roles
+      WHERE role_id = $1
+        AND tenant_id = $2
+      `,
+        [roleId, tenantId],
+      );
+
+      if (payload.user_ids.length > 0) {
+        const valuesSql: string[] = [];
+        const values: any[] = [];
+
+        payload.user_ids.forEach((userId, index) => {
+          const base = index * 3;
+          valuesSql.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+          values.push(userId, roleId, tenantId);
+        });
+
+        await client.query(
+          `
+    INSERT INTO user_roles (
+      user_id,
+      role_id,
+      tenant_id
+    )
+    VALUES ${valuesSql.join(", ")}
+    `,
+          values,
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return await this.getRoleById(tenantId, roleId);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
 
   async updateUserRoles(tenantId: string, userId: string, body: unknown) {
     const payload = UpdateUserRolesSchema.parse(body);
@@ -480,6 +572,39 @@ export const rbacService = {
     }
   },
 };
+
+export async function assignUsersToRoleHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantId(req);
+    const userId = req.user?.sub;
+
+    const data = await rbacService.assignUsersToRole(
+      tenantId,
+      req.params.id,
+      userId,
+      req.body,
+    );
+
+    return res.json({ data });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: error.flatten(),
+      });
+    }
+
+    if (error?.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+
+    next(error);
+  }
+}
 
 export async function getPermissionGroupsHandler(
   req: any,

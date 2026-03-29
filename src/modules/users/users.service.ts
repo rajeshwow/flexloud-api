@@ -151,70 +151,84 @@ export const usersService = {
   async listUsers(params: ListUsersParams) {
     const { tenantId, search, role, active, limit, offset } = params;
 
-    const where: string[] = ["tenant_id = $1"];
+    const where: string[] = ["u.tenant_id = $1"];
     const values: any[] = [tenantId];
     let i = 2;
 
     const s = search?.trim();
     if (s) {
       where.push(`(
-        email ILIKE $${i}
-        OR name ILIKE $${i}
-        OR COALESCE(phone, '') ILIKE $${i}
-        OR COALESCE(department, '') ILIKE $${i}
-        OR COALESCE(designation, '') ILIKE $${i}
-      )`);
+      u.email ILIKE $${i}
+      OR u.name ILIKE $${i}
+      OR COALESCE(u.phone, '') ILIKE $${i}
+      OR COALESCE(u.department, '') ILIKE $${i}
+      OR COALESCE(u.designation, '') ILIKE $${i}
+    )`);
       values.push(`%${s}%`);
       i++;
     }
 
     const r = role?.trim();
     if (r) {
-      where.push(`role = $${i}`);
+      where.push(`u.role = $${i}`);
       values.push(r);
       i++;
     }
 
     if (active === "true" || active === "false") {
-      where.push(`is_active = $${i}`);
+      where.push(`u.is_active = $${i}`);
       values.push(active === "true");
       i++;
     }
 
-    const countQ = `SELECT COUNT(1)::int AS total FROM users WHERE ${where.join(" AND ")}`;
+    const countQ = `
+    SELECT COUNT(1)::int AS total
+    FROM users u
+    WHERE ${where.join(" AND ")}
+  `;
     const totalRes = await pool.query(countQ, values);
     const total = totalRes.rows[0]?.total ?? 0;
 
     const dataQ = `
-      SELECT
-        id,
-        email,
-        name,
-        role,
-        is_active,
-        display_name,
-        first_name,
-        last_name,
-        phone_country_code,
-        phone,
-        city,
-        district,
-        state,
-        country,
-        postal_code,
-        designation,
-        department,
-        employee_code,
-        timezone,
-        language,
-        created_at,
-        updated_at,
-        is_owner
-      FROM users
-      WHERE ${where.join(" AND ")}
-      ORDER BY created_at DESC
-      LIMIT $${i} OFFSET $${i + 1}
-    `;
+    SELECT
+      u.id,
+      u.email,
+      u.name,
+      COALESCE(
+        STRING_AGG(DISTINCT r.name, ', ' ORDER BY r.name),
+        '-'
+      ) AS role,
+      u.is_active,
+      u.display_name,
+      u.first_name,
+      u.last_name,
+      u.phone_country_code,
+      u.phone,
+      u.city,
+      u.district,
+      u.state,
+      u.country,
+      u.postal_code,
+      u.designation,
+      u.department,
+      u.employee_code,
+      u.timezone,
+      u.language,
+      u.created_at,
+      u.updated_at,
+      u.is_owner
+    FROM users u
+    LEFT JOIN user_roles ur
+      ON ur.user_id = u.id
+     AND ur.tenant_id = u.tenant_id
+    LEFT JOIN roles r
+      ON r.id = ur.role_id
+     AND r.tenant_id = u.tenant_id
+    WHERE ${where.join(" AND ")}
+    GROUP BY u.id
+    ORDER BY u.created_at DESC
+    LIMIT $${i} OFFSET $${i + 1}
+  `;
 
     const dataRes = await pool.query(dataQ, [...values, limit, offset]);
 

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  assignUsersToRoleHandler,
   cloneRoleHandler,
   createRoleHandler,
   getPermissionGroupsHandler,
@@ -18,6 +19,7 @@ rbacRouter.post("/roles", createRoleHandler);
 rbacRouter.get("/roles/:id", getRoleByIdHandler);
 rbacRouter.patch("/roles/:id", updateRoleHandler);
 rbacRouter.post("/roles/:id/clone", cloneRoleHandler);
+rbacRouter.put("/roles/:id/users", assignUsersToRoleHandler);
 
 rbacRouter.patch("/users/:userId/roles", updateUserRolesHandler);
 

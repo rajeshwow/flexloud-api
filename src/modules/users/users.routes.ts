@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { requirePermissions } from "../../common/requirePermissions";
 import {
   createUserHandler,
   deactivateUserHandler,
@@ -12,24 +11,12 @@ import {
 
 const router = Router();
 
-router.get("/", requirePermissions(["USERS.VIEW"]), listUsersHandler);
-router.get("/:id", requirePermissions(["USERS.VIEW"]), getUserByIdHandler);
-router.post("/", requirePermissions(["USERS.CREATE"]), createUserHandler);
-router.patch("/:id", requirePermissions(["USERS.EDIT"]), updateUserHandler);
-router.patch(
-  "/:id/role",
-  requirePermissions(["USERS.EDIT"]),
-  updateRoleHandler,
-);
-router.patch(
-  "/:id/status",
-  requirePermissions(["USERS.EDIT"]),
-  updateStatusHandler,
-);
-router.delete(
-  "/:id",
-  requirePermissions(["USERS.DELETE"]),
-  deactivateUserHandler,
-);
+router.get("/", listUsersHandler);
+router.get("/:id", getUserByIdHandler);
+router.post("/", createUserHandler);
+router.patch("/:id", updateUserHandler);
+router.patch("/:id/role", updateRoleHandler);
+router.patch("/:id/status", updateStatusHandler);
+router.delete("/:id", deactivateUserHandler);
 
 export default router;
