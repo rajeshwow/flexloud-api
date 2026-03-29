@@ -24,6 +24,7 @@ import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import productsRouter from "./modules/products/products.routes";
 import quotesRouter from "./modules/quotes/quotes.routes";
+import rbacRouter from "./modules/rbac/rbac.routes";
 import tasksRouter from "./modules/tasks/tasks.routes";
 import usersRouter from "./modules/users/users.routes";
 import visitsRouter from "./modules/visits/visits.routes";
@@ -65,6 +66,7 @@ export function createApp() {
   app.use("/v1/:slug", resolveTenant, requireAuth, attachUserContext);
 
   app.use("/v1/:slug/me", meRouter());
+  app.use("/v1/:slug/rbac", rbacRouter);
   // app.use("/v1/:slug/notifications", notificationsRouter());
   app.use("/v1/:slug/client-logs", clientLogsRouter());
   app.use("/v1/:slug/users", usersRouter);

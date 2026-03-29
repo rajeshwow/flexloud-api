@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireRoles } from "../../common/rbac";
+import { requirePermissions } from "../../common/requirePermissions";
 import {
   createUserHandler,
   deactivateUserHandler,
@@ -12,12 +12,24 @@ import {
 
 const router = Router();
 
-router.get("/", requireRoles(["ADMIN", "MANAGER"]), listUsersHandler);
-router.get("/:id", requireRoles(["ADMIN", "MANAGER"]), getUserByIdHandler);
-router.post("/", requireRoles(["ADMIN"]), createUserHandler);
-router.patch("/:id", requireRoles(["ADMIN"]), updateUserHandler);
-router.patch("/:id/role", requireRoles(["ADMIN"]), updateRoleHandler);
-router.patch("/:id/status", requireRoles(["ADMIN"]), updateStatusHandler);
-router.delete("/:id", requireRoles(["ADMIN"]), deactivateUserHandler);
+router.get("/", requirePermissions(["USERS.VIEW"]), listUsersHandler);
+router.get("/:id", requirePermissions(["USERS.VIEW"]), getUserByIdHandler);
+router.post("/", requirePermissions(["USERS.CREATE"]), createUserHandler);
+router.patch("/:id", requirePermissions(["USERS.EDIT"]), updateUserHandler);
+router.patch(
+  "/:id/role",
+  requirePermissions(["USERS.EDIT"]),
+  updateRoleHandler,
+);
+router.patch(
+  "/:id/status",
+  requirePermissions(["USERS.EDIT"]),
+  updateStatusHandler,
+);
+router.delete(
+  "/:id",
+  requirePermissions(["USERS.DELETE"]),
+  deactivateUserHandler,
+);
 
 export default router;
