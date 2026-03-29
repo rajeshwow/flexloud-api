@@ -279,22 +279,30 @@ export async function clockInHandler(
 
     const insertResult = await client.query(
       `
-      INSERT INTO attendance_sessions (
-        tenant_id,
-        user_id,
-        attendance_date,
-        session_no,
-        clock_in_at,
-        late_by_minutes,
-        status,
-        source,
-        remarks,
-        created_by,
-        updated_by
-      )
-      VALUES ($1, $2, $3, $4, NOW(), $5, 'clocked_in', $6, $7, $8, $8)
-      RETURNING *
-      `,
+  INSERT INTO attendance_sessions (
+    tenant_id,
+    user_id,
+    attendance_date,
+    session_no,
+    clock_in_at,
+    late_by_minutes,
+    status,
+    source,
+    remarks,
+    clock_in_lat,
+    clock_in_lng,
+    clock_in_address,
+    clock_in_accuracy_meters,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    $1, $2, $3, $4, NOW(), $5, 'clocked_in', $6, $7,
+    $8, $9, $10, $11,
+    $12, $12
+  )
+  RETURNING *
+  `,
       [
         tenantId,
         userId,
@@ -303,6 +311,10 @@ export async function clockInHandler(
         lateByMinutes,
         parsed.source,
         parsed.remarks ?? null,
+        parsed.location.lat,
+        parsed.location.lng,
+        parsed.location.address ?? null,
+        parsed.location.accuracy_meters ?? null,
         userId,
       ],
     );
@@ -311,17 +323,31 @@ export async function clockInHandler(
 
     await client.query(
       `
-      INSERT INTO attendance_activity_logs (
-        tenant_id,
-        attendance_session_id,
-        user_id,
-        action,
-        meta,
-        created_by
-      )
-      VALUES ($1, $2, $3, 'clock_in', $4, $3)
-      `,
-      [tenantId, session.id, userId, JSON.stringify({ source: parsed.source })],
+  INSERT INTO attendance_activity_logs (
+    tenant_id,
+    attendance_session_id,
+    user_id,
+    action,
+    meta,
+    created_by
+  )
+  VALUES ($1, $2, $3, 'clock_in', $4, $3)
+  `,
+      [
+        tenantId,
+        session.id,
+        userId,
+        JSON.stringify({
+          source: parsed.source,
+          remarks: parsed.remarks ?? null,
+          location: {
+            lat: parsed.location.lat,
+            lng: parsed.location.lng,
+            address: parsed.location.address ?? null,
+            accuracy_meters: parsed.location.accuracy_meters ?? null,
+          },
+        }),
+      ],
     );
 
     await client.query("COMMIT");
@@ -385,39 +411,60 @@ export async function clockOutHandler(
 
     const updateResult = await client.query(
       `
-      UPDATE attendance_sessions
-      SET
-        clock_out_at = NOW(),
-        worked_minutes = GREATEST(FLOOR(EXTRACT(EPOCH FROM (NOW() - clock_in_at)) / 60), 0),
-        status = 'clocked_out',
-        remarks = COALESCE($1, remarks),
-        updated_at = NOW(),
-        updated_by = $2
-      WHERE id = $3
-      RETURNING *
-      `,
-      [parsed.remarks ?? null, userId, activeSession.id],
+  UPDATE attendance_sessions
+  SET
+    clock_out_at = NOW(),
+    worked_minutes = GREATEST(FLOOR(EXTRACT(EPOCH FROM (NOW() - clock_in_at)) / 60), 0),
+    status = 'clocked_out',
+    remarks = COALESCE($1, remarks),
+    clock_out_lat = $2,
+    clock_out_lng = $3,
+    clock_out_address = $4,
+    clock_out_accuracy_meters = $5,
+    updated_at = NOW(),
+    updated_by = $6
+  WHERE id = $7
+  RETURNING *
+  `,
+      [
+        parsed.remarks ?? null,
+        parsed.location.lat,
+        parsed.location.lng,
+        parsed.location.address ?? null,
+        parsed.location.accuracy_meters ?? null,
+        userId,
+        activeSession.id,
+      ],
     );
 
     const session = updateResult.rows[0];
 
     await client.query(
       `
-      INSERT INTO attendance_activity_logs (
-        tenant_id,
-        attendance_session_id,
-        user_id,
-        action,
-        meta,
-        created_by
-      )
-      VALUES ($1, $2, $3, 'clock_out', $4, $3)
-      `,
+  INSERT INTO attendance_activity_logs (
+    tenant_id,
+    attendance_session_id,
+    user_id,
+    action,
+    meta,
+    created_by
+  )
+  VALUES ($1, $2, $3, 'clock_out', $4, $3)
+  `,
       [
         tenantId,
         session.id,
         userId,
-        JSON.stringify({ worked_minutes: session.worked_minutes }),
+        JSON.stringify({
+          worked_minutes: session.worked_minutes,
+          remarks: parsed.remarks ?? null,
+          location: {
+            lat: parsed.location.lat,
+            lng: parsed.location.lng,
+            address: parsed.location.address ?? null,
+            accuracy_meters: parsed.location.accuracy_meters ?? null,
+          },
+        }),
       ],
     );
 

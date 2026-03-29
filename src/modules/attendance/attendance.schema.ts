@@ -1,12 +1,21 @@
 import { z } from "zod";
 
+const GeoLocationSchema = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  address: z.string().trim().max(1000).optional().nullable(),
+  accuracy_meters: z.number().min(0).max(100000).optional().nullable(),
+});
+
 export const ClockInSchema = z.object({
   remarks: z.string().trim().max(500).optional(),
   source: z.enum(["web", "mobile", "admin"]).optional().default("web"),
+  location: GeoLocationSchema,
 });
 
 export const ClockOutSchema = z.object({
   remarks: z.string().trim().max(500).optional(),
+  location: GeoLocationSchema,
 });
 
 export const GetAttendanceHistorySchema = z.object({
