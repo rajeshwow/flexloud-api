@@ -5,9 +5,9 @@ import { getPagination } from "../../common/pagination";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 
-export type Role = "ADMIN" | "MANAGER" | "AGENT";
+export type RoleId = string;
 
-const RoleEnum = z.enum(["ADMIN", "MANAGER", "AGENT"]);
+const RoleIdSchema = z.string().uuid("Valid role id is required");
 
 export type ListUsersParams = {
   tenantId: string;
@@ -22,7 +22,7 @@ export type CreateUserInput = {
   tenantId: string;
   email: string;
   name: string;
-  role: Role;
+  role_id: string;
 
   display_name?: string | null;
   first_name?: string | null;
@@ -63,67 +63,67 @@ export type UpdateUserInput = {
 const CreateUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(2),
-  role: RoleEnum.default("AGENT"),
+  role_id: RoleIdSchema,
 
-  display_name: z.string().optional(),
-  first_name: z.string().optional(),
-  last_name: z.string().optional(),
+  display_name: z.string().nullish(),
+  first_name: z.string().nullish(),
+  last_name: z.string().nullish(),
 
-  phone_country_code: z.string().optional(),
-  phone: z.string().optional(),
+  phone_country_code: z.string().nullish(),
+  phone: z.string().nullish(),
 
-  city: z.string().optional(),
-  district: z.string().optional(),
-  state: z.string().optional(),
-  country: z.string().optional(),
-  postal_code: z.string().optional(),
+  city: z.string().nullish(),
+  district: z.string().nullish(),
+  state: z.string().nullish(),
+  country: z.string().nullish(),
+  postal_code: z.string().nullish(),
 
-  address_line_1: z.string().optional(),
-  address_line_2: z.string().optional(),
-  landmark: z.string().optional(),
+  address_line_1: z.string().nullish(),
+  address_line_2: z.string().nullish(),
+  landmark: z.string().nullish(),
 
-  designation: z.string().optional(),
-  department: z.string().optional(),
-  employee_code: z.string().optional(),
+  designation: z.string().nullish(),
+  department: z.string().nullish(),
+  employee_code: z.string().nullish(),
 
-  timezone: z.string().optional(),
-  language: z.string().optional(),
+  timezone: z.string().nullish(),
+  language: z.string().nullish(),
 
   tempPassword: z.string().min(6).optional(),
-  metadata: z.record(z.any()).optional(),
+  metadata: z.record(z.any()).nullish(),
 });
 
 const UpdateUserSchema = z.object({
   name: z.string().min(2).optional(),
-  display_name: z.string().optional(),
-  first_name: z.string().optional(),
-  last_name: z.string().optional(),
+  display_name: z.string().nullish(),
+  first_name: z.string().nullish(),
+  last_name: z.string().nullish(),
 
-  phone_country_code: z.string().optional(),
-  phone: z.string().optional(),
+  phone_country_code: z.string().nullish(),
+  phone: z.string().nullish(),
 
-  city: z.string().optional(),
-  district: z.string().optional(),
-  state: z.string().optional(),
-  country: z.string().optional(),
-  postal_code: z.string().optional(),
+  city: z.string().nullish(),
+  district: z.string().nullish(),
+  state: z.string().nullish(),
+  country: z.string().nullish(),
+  postal_code: z.string().nullish(),
 
-  address_line_1: z.string().optional(),
-  address_line_2: z.string().optional(),
-  landmark: z.string().optional(),
+  address_line_1: z.string().nullish(),
+  address_line_2: z.string().nullish(),
+  landmark: z.string().nullish(),
 
-  designation: z.string().optional(),
-  department: z.string().optional(),
-  employee_code: z.string().optional(),
+  designation: z.string().nullish(),
+  department: z.string().nullish(),
+  employee_code: z.string().nullish(),
 
-  timezone: z.string().optional(),
-  language: z.string().optional(),
+  timezone: z.string().nullish(),
+  language: z.string().nullish(),
 
-  metadata: z.record(z.any()).optional(),
+  metadata: z.record(z.any()).nullish(),
 });
 
 const UpdateRoleSchema = z.object({
-  role: RoleEnum,
+  role_id: RoleIdSchema,
 });
 
 const UpdateStatusSchema = z.object({
@@ -158,20 +158,20 @@ export const usersService = {
     const s = search?.trim();
     if (s) {
       where.push(`(
-      u.email ILIKE $${i}
-      OR u.name ILIKE $${i}
-      OR COALESCE(u.phone, '') ILIKE $${i}
-      OR COALESCE(u.department, '') ILIKE $${i}
-      OR COALESCE(u.designation, '') ILIKE $${i}
-    )`);
+        u.email ILIKE $${i}
+        OR u.name ILIKE $${i}
+        OR COALESCE(u.phone, '') ILIKE $${i}
+        OR COALESCE(u.department, '') ILIKE $${i}
+        OR COALESCE(u.designation, '') ILIKE $${i}
+      )`);
       values.push(`%${s}%`);
       i++;
     }
 
-    const r = role?.trim();
-    if (r) {
-      where.push(`u.role = $${i}`);
-      values.push(r);
+    const roleId = role?.trim();
+    if (roleId) {
+      where.push(`ur.role_id = $${i}`);
+      values.push(roleId);
       i++;
     }
 
@@ -182,53 +182,83 @@ export const usersService = {
     }
 
     const countQ = `
-    SELECT COUNT(1)::int AS total
-    FROM users u
-    WHERE ${where.join(" AND ")}
-  `;
+      SELECT COUNT(DISTINCT u.id)::int AS total
+      FROM users u
+      LEFT JOIN user_roles ur
+        ON ur.user_id = u.id
+       AND ur.tenant_id = u.tenant_id
+      WHERE ${where.join(" AND ")}
+    `;
     const totalRes = await pool.query(countQ, values);
     const total = totalRes.rows[0]?.total ?? 0;
 
     const dataQ = `
-    SELECT
-      u.id,
-      u.email,
-      u.name,
-      COALESCE(
-        STRING_AGG(DISTINCT r.name, ', ' ORDER BY r.name),
-        '-'
-      ) AS role,
-      u.is_active,
-      u.display_name,
-      u.first_name,
-      u.last_name,
-      u.phone_country_code,
-      u.phone,
-      u.city,
-      u.district,
-      u.state,
-      u.country,
-      u.postal_code,
-      u.designation,
-      u.department,
-      u.employee_code,
-      u.timezone,
-      u.language,
-      u.created_at,
-      u.updated_at,
-      u.is_owner
-    FROM users u
-    LEFT JOIN user_roles ur
-      ON ur.user_id = u.id
-     AND ur.tenant_id = u.tenant_id
-    LEFT JOIN roles r
-      ON r.id = ur.role_id
-     AND r.tenant_id = u.tenant_id
-    WHERE ${where.join(" AND ")}
-    GROUP BY u.id
-    ORDER BY u.created_at DESC
-    LIMIT $${i} OFFSET $${i + 1}
-  `;
+      SELECT
+        u.id,
+        u.email,
+        u.name,
+        COALESCE(
+          STRING_AGG(DISTINCT r.name, ', ' ORDER BY r.name),
+          '-'
+        ) AS role,
+        COALESCE(
+          STRING_AGG(DISTINCT r.id::text, ', ' ORDER BY r.id::text),
+          ''
+        ) AS role_ids,
+        u.is_active,
+        u.display_name,
+        u.first_name,
+        u.last_name,
+        u.phone_country_code,
+        u.phone,
+
+        u.city AS city_id,
+        u.state AS state_id,
+        u.country AS country_id,
+
+        city_mv.label AS city,
+        u.district,
+        state_mv.label AS state,
+        country_mv.label AS country,
+        u.postal_code,
+
+        u.designation,
+        u.department,
+        u.employee_code,
+        u.timezone,
+        u.language,
+        u.created_at,
+        u.updated_at,
+        u.is_owner
+      FROM users u
+      LEFT JOIN user_roles ur
+        ON ur.user_id = u.id
+       AND ur.tenant_id = u.tenant_id
+      LEFT JOIN roles r
+        ON r.id = ur.role_id
+       AND r.tenant_id = u.tenant_id
+
+      LEFT JOIN master_values city_mv
+        ON city_mv.id::text = u.city
+       AND city_mv.tenant_id = u.tenant_id
+
+      LEFT JOIN master_values state_mv
+        ON state_mv.id::text = u.state
+       AND state_mv.tenant_id = u.tenant_id
+
+      LEFT JOIN master_values country_mv
+        ON country_mv.id::text = u.country
+       AND country_mv.tenant_id = u.tenant_id
+
+      WHERE ${where.join(" AND ")}
+      GROUP BY
+        u.id,
+        city_mv.label,
+        state_mv.label,
+        country_mv.label
+      ORDER BY u.created_at DESC
+      LIMIT $${i} OFFSET $${i + 1}
+    `;
 
     const dataRes = await pool.query(dataQ, [...values, limit, offset]);
 
@@ -238,12 +268,80 @@ export const usersService = {
   async getUserById(tenantId: string, userId: string) {
     const { rows } = await pool.query(
       `
-      SELECT *
-      FROM users
-      WHERE id = $1 AND tenant_id = $2
+      SELECT
+        u.id,
+        u.tenant_id,
+        u.email,
+        u.name,
+        COALESCE(
+          STRING_AGG(DISTINCT r.name, ', ' ORDER BY r.name),
+          '-'
+        ) AS role,
+        COALESCE(
+          STRING_AGG(DISTINCT r.id::text, ', ' ORDER BY r.id::text),
+          ''
+        ) AS role_ids,
+        u.username,
+        u.is_owner,
+        u.is_active,
+
+        u.display_name,
+        u.first_name,
+        u.last_name,
+
+        u.phone_country_code,
+        u.phone,
+
+        u.city AS city_id,
+        u.state AS state_id,
+        u.country AS country_id,
+
+        city_mv.label AS city,
+        u.district,
+        state_mv.label AS state,
+        country_mv.label AS country,
+        u.postal_code,
+
+        u.address_line_1,
+        u.address_line_2,
+        u.landmark,
+
+        u.designation,
+        u.department,
+        u.employee_code,
+
+        u.timezone,
+        u.language,
+        u.metadata,
+        u.created_at,
+        u.updated_at
+      FROM users u
+      LEFT JOIN user_roles ur
+        ON ur.user_id = u.id
+       AND ur.tenant_id = u.tenant_id
+      LEFT JOIN roles r
+        ON r.id = ur.role_id
+       AND r.tenant_id = u.tenant_id
+      LEFT JOIN master_values city_mv
+        ON city_mv.id::text = u.city
+       AND city_mv.tenant_id = u.tenant_id
+      LEFT JOIN master_values state_mv
+        ON state_mv.id::text = u.state
+       AND state_mv.tenant_id = u.tenant_id
+      LEFT JOIN master_values country_mv
+        ON country_mv.id::text = u.country
+       AND country_mv.tenant_id = u.tenant_id
+      WHERE u.id = $1
+        AND u.tenant_id = $2
+      GROUP BY
+        u.id,
+        city_mv.label,
+        state_mv.label,
+        country_mv.label
       `,
       [userId, tenantId],
     );
+
     return rows[0] || null;
   },
 
@@ -254,7 +352,27 @@ export const usersService = {
     const tempPassword = input.tempPassword ?? generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, 10);
 
+    const client = await pool.connect();
+
     try {
+      await client.query("BEGIN");
+
+      const roleCheck = await client.query(
+        `
+        SELECT id, name
+        FROM roles
+        WHERE id = $1 AND tenant_id = $2
+        LIMIT 1
+        `,
+        [input.role_id, input.tenantId],
+      );
+
+      if (!roleCheck.rows[0]) {
+        const err: any = new Error("Selected role not found");
+        err.statusCode = 400;
+        throw err;
+      }
+
       const q = `
         INSERT INTO users (
           id,
@@ -305,44 +423,17 @@ export const usersService = {
           COALESCE($25::jsonb, '{}'::jsonb),
           $26
         )
-        RETURNING
-          id,
-          tenant_id,
-          email,
-          name,
-          role,
-          username,
-          is_owner,
-          is_active,
-          display_name,
-          first_name,
-          last_name,
-          phone_country_code,
-          phone,
-          city,
-          district,
-          state,
-          country,
-          postal_code,
-          address_line_1,
-          address_line_2,
-          landmark,
-          designation,
-          department,
-          employee_code,
-          timezone,
-          language,
-          created_at,
-          updated_at
+        RETURNING id
       `;
 
       const isOwner = input.is_owner === true;
+      const fallbackRoleName = roleCheck.rows[0].name;
 
-      const { rows } = await pool.query(q, [
+      const { rows } = await client.query(q, [
         input.tenantId, // 1
         email, // 2
         input.name, // 3
-        input.role, // 4
+        fallbackRoleName, // 4 legacy users.role support
         username, // 5
         passwordHash, // 6
 
@@ -374,14 +465,41 @@ export const usersService = {
         isOwner, // 26
       ]);
 
-      return { user: rows[0], tempPassword };
+      const createdUserId = rows[0]?.id;
+
+      await client.query(
+        `
+        DELETE FROM user_roles
+        WHERE user_id = $1 AND tenant_id = $2
+        `,
+        [createdUserId, input.tenantId],
+      );
+
+      await client.query(
+        `
+        INSERT INTO user_roles (user_id, role_id, tenant_id)
+        VALUES ($1, $2, $3)
+        `,
+        [createdUserId, input.role_id, input.tenantId],
+      );
+
+      await client.query("COMMIT");
+
+      const user = await this.getUserById(input.tenantId, createdUserId);
+
+      return { user, tempPassword };
     } catch (e: any) {
+      await client.query("ROLLBACK");
+
       if (e?.code === "23505") {
         const err: any = new Error("User already exists");
         err.statusCode = 409;
         throw err;
       }
+
       throw e;
+    } finally {
+      client.release();
     }
   },
 
@@ -416,53 +534,92 @@ export const usersService = {
     params.push(userId);
     params.push(tenantId);
 
-    const q = `
+    const updateQ = `
       UPDATE users
       SET ${setParts.join(", ")}
       WHERE id = $${i} AND tenant_id = $${i + 1}
-      RETURNING
-        id,
-        email,
-        name,
-        role,
-        is_active,
-        display_name,
-        first_name,
-        last_name,
-        phone_country_code,
-        phone,
-        city,
-        district,
-        state,
-        country,
-        postal_code,
-        address_line_1,
-        address_line_2,
-        landmark,
-        designation,
-        department,
-        employee_code,
-        timezone,
-        language,
-        created_at,
-        updated_at
+      RETURNING id
     `;
 
-    const { rows } = await pool.query(q, params);
-    return rows[0] || null;
+    const updateRes = await pool.query(updateQ, params);
+    const updatedId = updateRes.rows[0]?.id;
+
+    if (!updatedId) return null;
+
+    return await this.getUserById(tenantId, updatedId);
   },
 
-  async updateRole(tenantId: string, userId: string, role: Role) {
-    const { rows } = await pool.query(
-      `
-      UPDATE users
-      SET role = $1
-      WHERE id = $2 AND tenant_id = $3
-      RETURNING id, email, name, role, is_active, updated_at
-      `,
-      [role, userId, tenantId],
-    );
-    return rows[0] || null;
+  async updateRole(tenantId: string, userId: string, roleId: string) {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const roleCheck = await client.query(
+        `
+        SELECT id, name
+        FROM roles
+        WHERE id = $1 AND tenant_id = $2
+        LIMIT 1
+        `,
+        [roleId, tenantId],
+      );
+
+      if (!roleCheck.rows[0]) {
+        const err: any = new Error("Selected role not found");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const existingUser = await client.query(
+        `
+        SELECT id
+        FROM users
+        WHERE id = $1 AND tenant_id = $2
+        LIMIT 1
+        `,
+        [userId, tenantId],
+      );
+
+      if (!existingUser.rows[0]) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      await client.query(
+        `
+        DELETE FROM user_roles
+        WHERE user_id = $1 AND tenant_id = $2
+        `,
+        [userId, tenantId],
+      );
+
+      await client.query(
+        `
+        INSERT INTO user_roles (user_id, role_id, tenant_id)
+        VALUES ($1, $2, $3)
+        `,
+        [userId, roleId, tenantId],
+      );
+
+      await client.query(
+        `
+        UPDATE users
+        SET role = $1
+        WHERE id = $2 AND tenant_id = $3
+        `,
+        [roleCheck.rows[0].name, userId, tenantId],
+      );
+
+      await client.query("COMMIT");
+
+      return await this.getUserById(tenantId, userId);
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
   },
 
   async updateStatus(tenantId: string, userId: string, is_active: boolean) {
@@ -560,7 +717,7 @@ export async function createUserHandler(
       tenantId,
       email: body.email,
       name: body.name,
-      role: body.role,
+      role_id: body.role_id,
 
       display_name: body.display_name ?? null,
       first_name: body.first_name ?? null,
@@ -659,7 +816,7 @@ export async function updateRoleHandler(
     const userId = req.params.id;
     const body = UpdateRoleSchema.parse(req.body);
 
-    const user = await usersService.updateRole(tenantId, userId, body.role);
+    const user = await usersService.updateRole(tenantId, userId, body.role_id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
     res.json({ data: user });
@@ -669,6 +826,10 @@ export async function updateRoleHandler(
         message: "Validation failed",
         errors: err.flatten(),
       });
+    }
+
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
     }
 
     next(err);

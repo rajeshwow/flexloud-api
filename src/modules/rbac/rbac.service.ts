@@ -83,6 +83,7 @@ export const rbacService = {
         r.id,
         r.tenant_id,
         r.name,
+        r.code,
         r.description,
         r.is_system,
         r.is_active,
@@ -135,6 +136,7 @@ export const rbacService = {
         INSERT INTO roles (
           tenant_id,
           name,
+          code,
           description,
           is_system,
           is_active,
@@ -269,6 +271,10 @@ export const rbacService = {
         updates.push(`name = $${i++}`);
         values.push(payload.name.trim());
       }
+      if (payload.code !== undefined) {
+        updates.push(`code = $${i++}`);
+        values.push(payload.code.trim());
+      }
 
       if (payload.description !== undefined) {
         updates.push(`description = $${i++}`);
@@ -366,6 +372,7 @@ export const rbacService = {
         INSERT INTO roles (
           tenant_id,
           name,
+          code,
           description,
           is_system,
           is_active,
