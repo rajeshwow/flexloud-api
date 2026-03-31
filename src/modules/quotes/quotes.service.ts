@@ -32,6 +32,7 @@ export async function createQuoteHandler(
       tax,
       grand_total,
       line_items = [],
+      lead_id,
     } = req.body;
 
     await client.query("BEGIN");
@@ -44,7 +45,7 @@ export async function createQuoteHandler(
       INSERT INTO quotes (
         id, tenant_id, quote_number, title,
         quotation_date, valid_until, quote_stage,
-        organization_id, contact_id, opportunity_id, assigned_to,
+        organization_id, contact_id, opportunity_id, assigned_to, lead_id,
         subtotal, discount, total, tax, grand_total,
         created_by_id, updated_by_id
       )
@@ -53,7 +54,7 @@ export async function createQuoteHandler(
         $5,$6,$7,
         $8,$9,$10,$11,
         $12,$13,$14,$15,$16,
-        $17,$18
+        $17,$18,$19
       )
       `,
       [
@@ -68,6 +69,7 @@ export async function createQuoteHandler(
         contact_id,
         opportunity_id,
         assigned_to,
+        lead_id,
         subtotal || 0,
         discount || 0,
         total || 0,
@@ -269,6 +271,7 @@ export async function updateQuoteHandler(
       tax,
       grand_total,
       line_items = [],
+      lead_id,
     } = req.body;
 
     await client.query("BEGIN");

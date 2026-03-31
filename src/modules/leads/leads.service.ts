@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 import { createActivityLog } from "../activity/activity.service";
+import { buildLeadInsights } from "../ai-insights/ai-insights.service";
 import {
   CreateLeadSchema,
   GetLeadsSchema,
@@ -565,16 +566,16 @@ export const leadsService = {
 
     if (input.search?.trim()) {
       whereClause += `
-        AND (
-          l.first_name ILIKE $${idx}
-          OR l.last_name ILIKE $${idx}
-          OR l.mobile ILIKE $${idx}
-          OR l.lead_number ILIKE $${idx}
-          OR l.lead_display_id ILIKE $${idx}
-          OR l.organization_name ILIKE $${idx}
-          OR CAST(l.emails AS TEXT) ILIKE $${idx}
-        )
-      `;
+      AND (
+        l.first_name ILIKE $${idx}
+        OR l.last_name ILIKE $${idx}
+        OR l.mobile ILIKE $${idx}
+        OR l.lead_number ILIKE $${idx}
+        OR l.lead_display_id ILIKE $${idx}
+        OR l.organization_name ILIKE $${idx}
+        OR CAST(l.emails AS TEXT) ILIKE $${idx}
+      )
+    `;
       values.push(`%${input.search.trim()}%`);
       idx++;
     }
@@ -592,59 +593,132 @@ export const leadsService = {
     }
 
     const listQuery = `
+    SELECT
+      l.*,
+
+      COALESCE(
+        NULLIF(u.name, ''),
+        NULLIF(
+          TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
+          ''
+        ),
+        u.email
+      ) AS assigned_to_name,
+
+      COALESCE(status_mv.label, '') AS status_label,
+      COALESCE(status_mv.value, '') AS status_value,
+      status_mv.color AS status_color,
+
+      COALESCE(priority_mv.label, '') AS priority_label,
+      COALESCE(priority_mv.value, '') AS priority_value,
+      priority_mv.color AS priority_color,
+
+      COALESCE(source_mv.label, '') AS source_label,
+      COALESCE(source_mv.value, '') AS source_value,
+      source_mv.color AS source_color,
+
+      COALESCE(task_stats.open_tasks_count, 0) AS open_tasks_count,
+      COALESCE(task_stats.closed_tasks_count, 0) AS closed_tasks_count,
+      COALESCE(interaction_stats.total_interactions_count, 0) AS total_interactions_count,
+      COALESCE(interaction_stats.no_response_count, 0) AS no_response_count,
+      COALESCE(quote_stats.has_quote, false) AS has_quote,
+
+      GREATEST(
+        COALESCE(l.updated_at, l.created_at),
+        COALESCE(task_stats.last_task_activity_at, l.created_at),
+        COALESCE(interaction_stats.last_interaction_at, l.created_at)
+      ) AS last_activity_at
+
+    FROM leads l
+
+    LEFT JOIN users u
+      ON u.id = l.assigned_to
+     AND u.tenant_id = l.tenant_id
+
+    LEFT JOIN master_values status_mv
+      ON status_mv.id = l.status_id
+     AND status_mv.tenant_id = l.tenant_id
+     AND status_mv.deleted_at IS NULL
+
+    LEFT JOIN master_values priority_mv
+      ON priority_mv.id = l.priority_id
+     AND priority_mv.tenant_id = l.tenant_id
+     AND priority_mv.deleted_at IS NULL
+
+    LEFT JOIN master_values source_mv
+      ON source_mv.id = l.source_id
+     AND source_mv.tenant_id = l.tenant_id
+     AND source_mv.deleted_at IS NULL
+
+    LEFT JOIN (
       SELECT
-        l.*,
-        COALESCE(
-          NULLIF(u.name, ''),
-          NULLIF(
-            TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
-            ''
-          ),
-          u.email
-        ) AS assigned_to_name,
+        t.related_to_id AS lead_id,
+        COUNT(*) FILTER (
+          WHERE t.deleted_at IS NULL
+            AND COALESCE(t.status, '') NOT IN ('completed', 'cancelled')
+        )::int AS open_tasks_count,
+        COUNT(*) FILTER (
+          WHERE t.deleted_at IS NULL
+            AND COALESCE(t.status, '') = 'completed'
+        )::int AS closed_tasks_count,
+        MAX(COALESCE(t.updated_at, t.created_at)) AS last_task_activity_at
+      FROM tasks t
+      WHERE t.tenant_id = $1
+        AND t.related_to_type = 'lead'
+        AND t.related_to_id IS NOT NULL
+      GROUP BY t.related_to_id
+    ) task_stats
+      ON task_stats.lead_id = l.id
 
-        status_mv.label AS status_label,
-        status_mv.value AS status_value,
-        status_mv.color AS status_color,
+    LEFT JOIN (
+      SELECT
+        i.related_to_id AS lead_id,
+        COUNT(*)::int AS total_interactions_count,
+        COUNT(*) FILTER (
+          WHERE LOWER(COALESCE(i.call_outcome, '')) IN (
+            'no response',
+            'no_response',
+            'not answered',
+            'no answer'
+          )
+             OR LOWER(COALESCE(i.status, '')) IN (
+            'no response',
+            'no_response',
+            'not answered',
+            'no answer'
+          )
+        )::int AS no_response_count,
+        MAX(i.start_at) AS last_interaction_at
+      FROM interactions i
+      WHERE i.tenant_id = $1
+        AND i.related_to_type = 'lead'
+        AND i.related_to_id IS NOT NULL
+      GROUP BY i.related_to_id
+    ) interaction_stats
+      ON interaction_stats.lead_id = l.id
 
-        priority_mv.label AS priority_label,
-        priority_mv.value AS priority_value,
-        priority_mv.color AS priority_color,
+    LEFT JOIN (
+      SELECT
+        q.lead_id,
+        TRUE AS has_quote
+      FROM quotes q
+      WHERE q.tenant_id = $1
+        AND q.deleted_at IS NULL
+        AND q.lead_id IS NOT NULL
+      GROUP BY q.lead_id
+    ) quote_stats
+      ON quote_stats.lead_id = l.id
 
-        source_mv.label AS source_label,
-        source_mv.value AS source_value,
-        source_mv.color AS source_color
-
-      FROM leads l
-      LEFT JOIN users u
-        ON u.id = l.assigned_to
-       AND u.tenant_id = l.tenant_id
-
-      LEFT JOIN master_values status_mv
-        ON status_mv.id = l.status_id
-       AND status_mv.tenant_id = l.tenant_id
-       AND status_mv.deleted_at IS NULL
-
-      LEFT JOIN master_values priority_mv
-        ON priority_mv.id = l.priority_id
-       AND priority_mv.tenant_id = l.tenant_id
-       AND priority_mv.deleted_at IS NULL
-
-      LEFT JOIN master_values source_mv
-        ON source_mv.id = l.source_id
-       AND source_mv.tenant_id = l.tenant_id
-       AND source_mv.deleted_at IS NULL
-
-      ${whereClause}
-      ORDER BY l.created_at DESC
-      LIMIT $${idx} OFFSET $${idx + 1};
-    `;
+    ${whereClause}
+    ORDER BY l.created_at DESC
+    LIMIT $${idx} OFFSET $${idx + 1};
+  `;
 
     const countQuery = `
-      SELECT COUNT(*)::int AS total
-      FROM leads l
-      ${whereClause};
-    `;
+    SELECT COUNT(*)::int AS total
+    FROM leads l
+    ${whereClause};
+  `;
 
     const listValues = [...values, limit, offset];
 
@@ -655,8 +729,22 @@ export const leadsService = {
 
     const total = countResult.rows[0]?.total ?? 0;
 
+    const rowsWithInsights = listResult.rows.map((row) => {
+      const insights = buildLeadInsights({
+        ...row,
+        status: row.status_value || row.status_label || row.status || "",
+        budget: row.opportunity_amount ?? row.budget ?? 0,
+      });
+
+      return {
+        ...row,
+        lead_score: insights.leadScore.score,
+        lead_temperature: insights.leadScore.label,
+      };
+    });
+
     return {
-      data: listResult.rows,
+      data: rowsWithInsights,
       pagination: {
         page,
         limit,
