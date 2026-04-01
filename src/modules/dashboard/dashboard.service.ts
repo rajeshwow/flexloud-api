@@ -401,45 +401,18 @@ async function getOverdueTasksCount(tenantId: string): Promise<number> {
 }
 
 async function getAttendanceTodayCount(tenantId: string): Promise<number> {
-  const attendanceTable = await resolveExistingTable([
-    "attendance_sessions",
-    "attendance",
-    "attendances",
-    "attendance_logs",
-    "attendance_records",
-    "attendance_history",
-    "employee_attendance",
-  ]);
-
-  if (!attendanceTable) return 0;
-
-  const hasTenantId = await columnExists(attendanceTable, "tenant_id");
-  if (!hasTenantId) return 0;
-
-  const hasDeletedAt = await columnExists(attendanceTable, "deleted_at");
-  const hasAttendanceDate = await columnExists(
-    attendanceTable,
-    "attendance_date",
-  );
-  const hasUserId = await columnExists(attendanceTable, "user_id");
-  const hasStatus = await columnExists(attendanceTable, "status");
-
-  if (!hasAttendanceDate || !hasUserId) return 0;
-
-  const query = `
+  const { rows } = await pool.query<{ count: number }>(
+    `
     SELECT COUNT(DISTINCT user_id)::int AS count
-    FROM ${attendanceTable}
+    FROM attendance_sessions
     WHERE tenant_id = $1
-      ${hasDeletedAt ? "AND deleted_at IS NULL" : ""}
+      AND deleted_at IS NULL
       AND attendance_date = CURRENT_DATE
-      ${
-        hasStatus
-          ? "AND LOWER(COALESCE(status, 'present')) NOT IN ('absent', 'cancelled', 'canceled')"
-          : ""
-      }
-  `;
+      AND LOWER(COALESCE(status, 'present')) NOT IN ('absent', 'cancelled', 'canceled')
+    `,
+    [tenantId],
+  );
 
-  const { rows } = await pool.query<{ count: number }>(query, [tenantId]);
   return Number(rows[0]?.count || 0);
 }
 
