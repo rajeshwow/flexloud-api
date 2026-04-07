@@ -8,8 +8,6 @@ const TaskStatusEnum = z.enum([
   "deferred",
 ]);
 
-const TaskPriorityEnum = z.enum(["low", "medium", "high", "urgent"]);
-
 const TaskRelatedToTypeEnum = z.enum([
   "none",
   "organization",
@@ -22,10 +20,13 @@ const TaskRepeatEnum = z.enum(["none", "daily", "weekly", "monthly", "yearly"]);
 
 const TaskBaseSchema = z.object({
   subject: z.string().trim().min(1, "Subject is required").max(255),
+
   description: z.string().trim().max(5000).nullable().optional(),
 
   status: TaskStatusEnum.default("not_started"),
-  priority: TaskPriorityEnum.default("medium"),
+
+  // ✅ NEW (master based)
+  priority_id: z.string().uuid().nullable().optional(),
 
   start_date: z.string().datetime(),
   end_date: z.string().datetime(),
@@ -38,6 +39,7 @@ const TaskBaseSchema = z.object({
   repeat_task: TaskRepeatEnum.default("none"),
   repeat_task_end: z.string().date().nullable().optional(),
 
+  task_duration: z.string().optional().nullable(), // ✅ add
   task_duration_minutes: z.number().int().min(0).nullable().optional(),
 });
 
@@ -115,8 +117,13 @@ export const GetTasksSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
   search: z.string().trim().optional(),
+
   status: TaskStatusEnum.optional(),
-  priority: TaskPriorityEnum.optional(),
+
+  // ❌ OLD REMOVED: priority
+  // ✅ NEW:
+  priority_id: z.string().uuid().optional(),
+
   assigned_to: z.string().uuid().optional(),
   related_to_type: TaskRelatedToTypeEnum.optional(),
 });

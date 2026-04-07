@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { NextFunction, Request, Response } from "express";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
+import { calculateTaskPerformance } from "./task-performance.service";
 import {
   CreateTaskSchema,
   GetTasksSchema,
@@ -11,6 +12,45 @@ import {
 function buildTaskNumber() {
   const short = randomUUID().split("-")[0].toUpperCase();
   return `TASK-${short}`;
+}
+
+async function logTaskActivity({
+  tenantId,
+  taskId,
+  action,
+  fieldName,
+  oldValue,
+  newValue,
+  description,
+  performedBy,
+}: {
+  tenantId: string;
+  taskId: string;
+  action: string;
+  fieldName?: string | null;
+  oldValue?: string | null;
+  newValue?: string | null;
+  description?: string | null;
+  performedBy?: string | null;
+}) {
+  await pool.query(
+    `
+    INSERT INTO task_activities (
+      tenant_id, task_id, action, field_name, old_value, new_value, description, performed_by
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    `,
+    [
+      tenantId,
+      taskId,
+      action,
+      fieldName ?? null,
+      oldValue ?? null,
+      newValue ?? null,
+      description ?? null,
+      performedBy ?? null,
+    ],
+  );
 }
 
 export async function createTaskHandler(
@@ -33,7 +73,7 @@ export async function createTaskHandler(
         subject,
         description,
         status,
-        priority,
+        priority_id,
         start_date,
         end_date,
         assigned_to,
@@ -41,6 +81,7 @@ export async function createTaskHandler(
         related_to_id,
         repeat_task,
         repeat_task_end,
+        task_duration,
         task_duration_minutes,
         created_by,
         updated_by
@@ -48,7 +89,7 @@ export async function createTaskHandler(
       VALUES (
         gen_random_uuid(),
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10, $11, $12, $13, $14, $15, $16
+        $10, $11, $12, $13, $14, $15, $16, $17
       )
       RETURNING *;
     `;
@@ -59,7 +100,7 @@ export async function createTaskHandler(
       parsed.subject,
       parsed.description ?? null,
       parsed.status,
-      parsed.priority,
+      parsed.priority_id ?? null,
       parsed.start_date,
       parsed.end_date,
       parsed.assigned_to ?? null,
@@ -67,12 +108,21 @@ export async function createTaskHandler(
       parsed.related_to_id ?? null,
       parsed.repeat_task,
       parsed.repeat_task_end ?? null,
+      parsed.task_duration ?? null,
       parsed.task_duration_minutes ?? null,
       userId,
       userId,
     ];
 
     const result = await pool.query(query, values);
+    await calculateTaskPerformance(result.rows[0].id, tenantId);
+    await logTaskActivity({
+      tenantId,
+      taskId: result.rows[0].id,
+      action: "created",
+      description: "Task created",
+      performedBy: userId,
+    });
 
     return res.status(201).json({
       message: "Task created successfully",
@@ -119,9 +169,9 @@ export async function getTasksHandler(
       idx++;
     }
 
-    if (parsed.priority) {
-      whereClause += ` AND t.priority = $${idx}`;
-      values.push(parsed.priority);
+    if (parsed.priority_id) {
+      whereClause += ` AND t.priority_id = $${idx}`;
+      values.push(parsed.priority_id);
       idx++;
     }
 
@@ -140,13 +190,66 @@ export async function getTasksHandler(
     const listQuery = `
       SELECT
         t.*,
+        COALESCE(
+          NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+          u.name,
+          u.email
+        ) AS assigned_to_name,
+        pmv.id AS priority_id,
+        pmv.label AS priority_name,
+        pmv.value AS priority_value,
+        tpm.final_score,
+        tpm.score_band,
+        tpm.activity_count,
+        tpm.first_response_minutes,
+        tpm.overdue_days,
+        tpm.is_overdue,
+        tpm.completed_on_time,
+        tpm.completion_score,
+tpm.activity_score,
+tpm.response_score,
+tpm.overdue_penalty,
+tpm.priority_multiplier,
         CASE
-          WHEN u.id IS NOT NULL
-          THEN CONCAT(COALESCE(u.name))
+          WHEN t.related_to_type = 'organization' THEN org.name
+          WHEN t.related_to_type = 'contact' THEN
+            COALESCE(
+              NULLIF(TRIM(CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, ''))), ''),
+              c.email
+            )
+          WHEN t.related_to_type = 'lead' THEN
+            COALESCE(
+              NULLIF(TRIM(CONCAT(COALESCE(l.first_name, ''), ' ', COALESCE(l.last_name, ''))), ''),
+              l.organization_name,
+              l.lead_display_id,
+              l.lead_number
+            )
+          WHEN t.related_to_type = 'opportunity' THEN o.name
           ELSE NULL
-        END AS assigned_to_name
+        END AS related_to_name
       FROM tasks t
-      LEFT JOIN users u ON u.id = t.assigned_to
+      LEFT JOIN users u
+        ON u.id = t.assigned_to
+      LEFT JOIN master_values pmv
+        ON pmv.id = t.priority_id
+      LEFT JOIN organizations org
+        ON t.related_to_type = 'organization'
+       AND org.id = t.related_to_id
+       AND org.tenant_id = t.tenant_id
+      LEFT JOIN contacts c
+        ON t.related_to_type = 'contact'
+       AND c.id = t.related_to_id
+       AND c.tenant_id = t.tenant_id
+      LEFT JOIN leads l
+        ON t.related_to_type = 'lead'
+       AND l.id = t.related_to_id
+       AND l.tenant_id = t.tenant_id
+      LEFT JOIN opportunities o
+        ON t.related_to_type = 'opportunity'
+       AND o.id = t.related_to_id
+       AND o.tenant_id = t.tenant_id
+             LEFT JOIN task_performance_metrics tpm
+        ON tpm.task_id = t.id
       ${whereClause}
       ORDER BY t.created_at DESC
       LIMIT $${idx} OFFSET $${idx + 1};
@@ -192,13 +295,66 @@ export async function getTaskByIdHandler(
     const query = `
       SELECT
         t.*,
+        COALESCE(
+          NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+          u.name,
+          u.email
+        ) AS assigned_to_name,
+        pmv.id AS priority_id,
+        pmv.label AS priority_name,
+        pmv.value AS priority_value,
+         tpm.final_score,
+        tpm.score_band,
+        tpm.activity_count,
+        tpm.first_response_minutes,
+        tpm.overdue_days,
+        tpm.is_overdue,
+        tpm.completed_on_time,
+        tpm.completion_score,
+tpm.activity_score,
+tpm.response_score,
+tpm.overdue_penalty,
+tpm.priority_multiplier,
         CASE
-          WHEN u.id IS NOT NULL
-          THEN CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))
+          WHEN t.related_to_type = 'organization' THEN org.name
+          WHEN t.related_to_type = 'contact' THEN
+            COALESCE(
+              NULLIF(TRIM(CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, ''))), ''),
+              c.email
+            )
+          WHEN t.related_to_type = 'lead' THEN
+            COALESCE(
+              NULLIF(TRIM(CONCAT(COALESCE(l.first_name, ''), ' ', COALESCE(l.last_name, ''))), ''),
+              l.organization_name,
+              l.lead_display_id,
+              l.lead_number
+            )
+         WHEN t.related_to_type = 'opportunity' THEN o.name
           ELSE NULL
-        END AS assigned_to_name
+        END AS related_to_name
       FROM tasks t
-      LEFT JOIN users u ON u.id = t.assigned_to
+      LEFT JOIN users u
+        ON u.id = t.assigned_to
+      LEFT JOIN master_values pmv
+        ON pmv.id = t.priority_id
+      LEFT JOIN organizations org
+        ON t.related_to_type = 'organization'
+       AND org.id = t.related_to_id
+       AND org.tenant_id = t.tenant_id
+      LEFT JOIN contacts c
+        ON t.related_to_type = 'contact'
+       AND c.id = t.related_to_id
+       AND c.tenant_id = t.tenant_id
+      LEFT JOIN leads l
+        ON t.related_to_type = 'lead'
+       AND l.id = t.related_to_id
+       AND l.tenant_id = t.tenant_id
+      LEFT JOIN opportunities o
+        ON t.related_to_type = 'opportunity'
+       AND o.id = t.related_to_id
+       AND o.tenant_id = t.tenant_id
+       LEFT JOIN task_performance_metrics tpm
+  ON tpm.task_id = t.id
       WHERE t.id = $1
         AND t.tenant_id = $2
         AND t.deleted_at IS NULL
@@ -208,12 +364,16 @@ export async function getTaskByIdHandler(
     const result = await pool.query(query, [id, tenantId]);
 
     if (!result.rows.length) {
-      return res.status(404).json({ message: "Task not found" });
+      return res.status(404).json({
+        message: "Task not found",
+        statusCode: 404,
+      });
     }
 
     return res.status(200).json({
       message: "Task fetched successfully",
       data: result.rows[0],
+      statusCode: 200,
     });
   } catch (error) {
     next(error);
@@ -244,7 +404,10 @@ export async function updateTaskHandler(
     );
 
     if (!existingResult.rows.length) {
-      return res.status(404).json({ message: "Task not found" });
+      return res.status(404).json({
+        message: "Task not found",
+        statusCode: 404,
+      });
     }
 
     const existing = existingResult.rows[0];
@@ -255,6 +418,7 @@ export async function updateTaskHandler(
     if (new Date(nextEndDate).getTime() < new Date(nextStartDate).getTime()) {
       return res.status(400).json({
         message: "End date must be after start date",
+        statusCode: 400,
       });
     }
 
@@ -264,7 +428,7 @@ export async function updateTaskHandler(
         subject = $1,
         description = $2,
         status = $3,
-        priority = $4,
+        priority_id = $4,
         start_date = $5,
         end_date = $6,
         assigned_to = $7,
@@ -272,11 +436,12 @@ export async function updateTaskHandler(
         related_to_id = $9,
         repeat_task = $10,
         repeat_task_end = $11,
-        task_duration_minutes = $12,
-        updated_by = $13,
+        task_duration = $12,
+        task_duration_minutes = $13,
+        updated_by = $14,
         updated_at = now()
-      WHERE id = $14
-        AND tenant_id = $15
+      WHERE id = $15
+        AND tenant_id = $16
         AND deleted_at IS NULL
       RETURNING *;
     `;
@@ -287,7 +452,9 @@ export async function updateTaskHandler(
         ? parsed.description
         : existing.description,
       parsed.status ?? existing.status,
-      parsed.priority ?? existing.priority,
+      parsed.priority_id !== undefined
+        ? parsed.priority_id
+        : existing.priority_id,
       nextStartDate,
       nextEndDate,
       parsed.assigned_to !== undefined
@@ -301,6 +468,9 @@ export async function updateTaskHandler(
       parsed.repeat_task_end !== undefined
         ? parsed.repeat_task_end
         : existing.repeat_task_end,
+      parsed.task_duration !== undefined
+        ? parsed.task_duration
+        : existing.task_duration,
       parsed.task_duration_minutes !== undefined
         ? parsed.task_duration_minutes
         : existing.task_duration_minutes,
@@ -310,10 +480,12 @@ export async function updateTaskHandler(
     ];
 
     const result = await pool.query(query, values);
+    await calculateTaskPerformance(id, tenantId);
 
     return res.status(200).json({
       message: "Task updated successfully",
       data: result.rows[0],
+      statusCode: 200,
     });
   } catch (error) {
     next(error);
@@ -346,11 +518,15 @@ export async function deleteTaskHandler(
     );
 
     if (!result.rows.length) {
-      return res.status(404).json({ message: "Task not found" });
+      return res.status(404).json({
+        message: "Task not found",
+        statusCode: 404,
+      });
     }
 
     return res.status(200).json({
       message: "Task deleted successfully",
+      statusCode: 200,
     });
   } catch (error) {
     next(error);
