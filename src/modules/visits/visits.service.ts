@@ -74,6 +74,8 @@ export async function createVisitHandler(
         start_date,
         end_date,
         next_followup_date,
+        checkin_captured_at,
+        checkout_captured_at,
         duration,
         duration_in_minutes,
         remarks,
@@ -102,7 +104,8 @@ export async function createVisitHandler(
         $11, $12, $13, $14, $15,
         $16, $17, $18, $19, $20,
         $21, $22, $23, $24, $25,
-        $26, $27, $28, $29
+        $26, $27, $28, $29, $30,
+        $31
       )
       RETURNING *
       `,
@@ -115,6 +118,8 @@ export async function createVisitHandler(
         parsed.start_date ?? null,
         parsed.end_date ?? null,
         parsed.next_followup_date ?? null,
+        parsed.checkin_captured_at ?? null,
+        parsed.checkout_captured_at ?? null,
         duration,
         durationInMinutes,
         parsed.remarks,
@@ -138,8 +143,6 @@ export async function createVisitHandler(
         userId ?? null,
       ],
     );
-
-    const visit = result.rows[0];
 
     return res.status(201).json({
       success: true,
@@ -202,10 +205,22 @@ export async function getVisitsListHandler(
     const listQuery = `
       SELECT
         v.*,
-        assigned_user.name AS assigned_to_name
+        assigned_user.name AS assigned_to_name,
+        org.name AS organization_name,
+        CONCAT_WS(' ', c.first_name, c.last_name) AS contact_name,
+        CONCAT_WS(' ', l.first_name, l.last_name) AS lead_name
       FROM visits v
       LEFT JOIN users assigned_user
         ON assigned_user.id = v.assigned_to_user_id
+      LEFT JOIN organizations org
+        ON org.id = v.organization_id
+        AND org.tenant_id = v.tenant_id
+      LEFT JOIN contacts c
+        ON c.id = v.contact_id
+        AND c.tenant_id = v.tenant_id
+      LEFT JOIN leads l
+        ON l.id = v.lead_id
+        AND l.tenant_id = v.tenant_id
       ${whereClause}
       ORDER BY v.created_at DESC
       LIMIT $${values.length - 1}
@@ -244,7 +259,10 @@ export async function getVisitByIdHandler(
         v.*,
         assigned_user.name AS assigned_to_name,
         created_user.name AS created_by_name,
-        updated_user.name AS updated_by_name
+        updated_user.name AS updated_by_name,
+        org.name AS organization_name,
+        CONCAT_WS(' ', c.first_name, c.last_name) AS contact_name,
+        CONCAT_WS(' ', l.first_name, l.last_name) AS lead_name
       FROM visits v
       LEFT JOIN users assigned_user
         ON assigned_user.id = v.assigned_to_user_id
@@ -252,6 +270,15 @@ export async function getVisitByIdHandler(
         ON created_user.id = v.created_by_id
       LEFT JOIN users updated_user
         ON updated_user.id = v.updated_by_id
+      LEFT JOIN organizations org
+        ON org.id = v.organization_id
+        AND org.tenant_id = v.tenant_id
+      LEFT JOIN contacts c
+        ON c.id = v.contact_id
+        AND c.tenant_id = v.tenant_id
+      LEFT JOIN leads l
+        ON l.id = v.lead_id
+        AND l.tenant_id = v.tenant_id
       WHERE v.id = $1
         AND v.tenant_id = $2
         AND v.deleted_at IS NULL
@@ -334,27 +361,29 @@ export async function updateVisitHandler(
         start_date = COALESCE($7, start_date),
         end_date = COALESCE($8, end_date),
         next_followup_date = COALESCE($9, next_followup_date),
-        duration = $10,
-        duration_in_minutes = $11,
-        remarks = COALESCE($12, remarks),
-        assigned_to_user_id = COALESCE($13, assigned_to_user_id),
-        organization_id = COALESCE($14, organization_id),
-        contact_id = COALESCE($15, contact_id),
-        lead_id = COALESCE($16, lead_id),
-        case_id = COALESCE($17, case_id),
-        checkin_address = COALESCE($18, checkin_address),
-        checkout_address = COALESCE($19, checkout_address),
-        checkin_latitude = COALESCE($20, checkin_latitude),
-        checkin_longitude = COALESCE($21, checkin_longitude),
-        checkout_latitude = COALESCE($22, checkout_latitude),
-        checkout_longitude = COALESCE($23, checkout_longitude),
-        spare_cost = COALESCE($24, spare_cost),
-        employee_cost = COALESCE($25, employee_cost),
-        travelling_cost = COALESCE($26, travelling_cost),
-        other_cost = COALESCE($27, other_cost),
-        total_cost = $28,
+        checkin_captured_at = COALESCE($10, checkin_captured_at),
+        checkout_captured_at = COALESCE($11, checkout_captured_at),
+        duration = $12,
+        duration_in_minutes = $13,
+        remarks = COALESCE($14, remarks),
+        assigned_to_user_id = COALESCE($15, assigned_to_user_id),
+        organization_id = COALESCE($16, organization_id),
+        contact_id = COALESCE($17, contact_id),
+        lead_id = COALESCE($18, lead_id),
+        case_id = COALESCE($19, case_id),
+        checkin_address = COALESCE($20, checkin_address),
+        checkout_address = COALESCE($21, checkout_address),
+        checkin_latitude = COALESCE($22, checkin_latitude),
+        checkin_longitude = COALESCE($23, checkin_longitude),
+        checkout_latitude = COALESCE($24, checkout_latitude),
+        checkout_longitude = COALESCE($25, checkout_longitude),
+        spare_cost = COALESCE($26, spare_cost),
+        employee_cost = COALESCE($27, employee_cost),
+        travelling_cost = COALESCE($28, travelling_cost),
+        other_cost = COALESCE($29, other_cost),
+        total_cost = $30,
         updated_at = now(),
-        updated_by_id = $29
+        updated_by_id = $31
       WHERE id = $1
         AND tenant_id = $2
       RETURNING *
@@ -369,6 +398,8 @@ export async function updateVisitHandler(
         parsed.start_date ?? null,
         parsed.end_date ?? null,
         parsed.next_followup_date ?? null,
+        parsed.checkin_captured_at ?? null,
+        parsed.checkout_captured_at ?? null,
         duration,
         durationInMinutes,
         parsed.remarks ?? null,

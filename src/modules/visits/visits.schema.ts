@@ -18,21 +18,24 @@ export const CreateVisitSchema = z.object({
   end_date: z.string().datetime().optional(),
   next_followup_date: z.string().datetime().optional(),
 
+  checkin_captured_at: z.string().datetime().nullable().optional(),
+  checkout_captured_at: z.string().datetime().nullable().optional(),
+
   remarks: z.string().trim().min(1, "Remarks is required"),
 
-  assigned_to_user_id: z.string().uuid().optional(),
-  organization_id: z.string().uuid().optional(),
-  contact_id: z.string().uuid().optional(),
-  lead_id: z.string().uuid().optional(),
-  case_id: z.string().uuid().optional(),
+  assigned_to_user_id: z.string().uuid().nullable().optional(),
+  organization_id: z.string().uuid().nullable().optional(),
+  contact_id: z.string().uuid().nullable().optional(),
+  lead_id: z.string().uuid().nullable().optional(),
+  case_id: z.string().uuid().nullable().optional(),
 
   checkin_address: z.string().trim().optional(),
   checkout_address: z.string().trim().optional(),
 
-  checkin_latitude: z.coerce.number().optional(),
-  checkin_longitude: z.coerce.number().optional(),
-  checkout_latitude: z.coerce.number().optional(),
-  checkout_longitude: z.coerce.number().optional(),
+  checkin_latitude: z.coerce.number().nullable().optional(),
+  checkin_longitude: z.coerce.number().nullable().optional(),
+  checkout_latitude: z.coerce.number().nullable().optional(),
+  checkout_longitude: z.coerce.number().nullable().optional(),
 
   spare_cost: z.coerce.number().min(0).optional().default(0),
   employee_cost: z.coerce.number().min(0).optional().default(0),
