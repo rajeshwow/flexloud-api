@@ -21,6 +21,7 @@ import interactionsRouter from "./modules/interactions/interactions.routes";
 import leadsRouter from "./modules/leads/leads.route";
 import leaveRouter from "./modules/leaves/leave.routes";
 import masterRouter from "./modules/masters/masters.routes";
+import myDayRouter from "./modules/my-day/my-day.routes";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import productsRouter from "./modules/products/products.routes";
@@ -89,6 +90,7 @@ export function createApp() {
   app.use("/v1/:slug/ai-insights", aiInsightsRouter);
   app.use("/v1/:slug/geo-visits", geoVisitsRouter);
   app.use("/v1/:slug/dashboard", dashboardRouter);
+  app.use("/v1/:slug/my-day", myDayRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
