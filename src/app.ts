@@ -25,8 +25,11 @@ import myDayRouter from "./modules/my-day/my-day.routes";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import productsRouter from "./modules/products/products.routes";
+import purchaseOrderRouter from "./modules/purchase-orders/purchase-orders.routes";
 import quotesRouter from "./modules/quotes/quotes.routes";
 import rbacRouter from "./modules/rbac/rbac.routes";
+import salesOrdersRouter from "./modules/sales-orders/sales-orders.routes";
+import tallyRouter from "./modules/tally/tally.routes";
 import tasksRouter from "./modules/tasks/tasks.routes";
 import usersRouter from "./modules/users/users.routes";
 import visitsRouter from "./modules/visits/visits.routes";
@@ -91,6 +94,9 @@ export function createApp() {
   app.use("/v1/:slug/geo-visits", geoVisitsRouter);
   app.use("/v1/:slug/dashboard", dashboardRouter);
   app.use("/v1/:slug/my-day", myDayRouter);
+  app.use("/v1/:slug/tally", tallyRouter);
+  app.use("/v1/:slug/purchase-orders", purchaseOrderRouter);
+  app.use("/v1/:slug/sales-orders", salesOrdersRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

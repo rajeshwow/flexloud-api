@@ -160,18 +160,18 @@ export async function createOpportunityHandler(
         created_by,
         updated_by
       )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-        $21, $22, $23, $24, $25, $26, $27, $28
-      )
-      RETURNING *
+     VALUES (
+  $1, $2, 'OPP-' || LPAD(nextval('opportunity_number_seq')::TEXT, 7, '0'), $3, $4, $5, $6, $7, $8, $9,
+  $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+  $20, $21, $22, $23, $24, $25, $26, $27
+)
+RETURNING *
     `;
 
     const opportunityResult = await client.query(insertOpportunityQuery, [
       opportunityId,
       tenantId,
-      input.opportunity_number ?? null,
+      // input.opportunity_number ?? null,
       input.name,
       input.organization_name ?? null,
       input.contact_name ?? null,
@@ -282,8 +282,8 @@ export async function getOpportunitiesHandler(
     return res.status(401).json({ message: "Unauthorized: tenantId missing" });
   }
 
-  const page = Number(req.query.page || 1);
-  const limit = Number(req.query.limit || 20);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const limit = Math.max(Number(req.query.limit || 20), 1);
   const offset = (page - 1) * limit;
 
   const search = String(req.query.search || "").trim();
@@ -295,61 +295,65 @@ export async function getOpportunitiesHandler(
   const user = String(req.query.user || "").trim();
   const created_at = String(req.query.created_at || "").trim();
 
-  const whereParts: string[] = ["tenant_id = $1", "deleted_at IS NULL"];
+  const whereParts: string[] = ["o.tenant_id = $1", "o.deleted_at IS NULL"];
   const values: Array<string | number> = [tenantId];
   let paramIndex = 2;
 
   if (search) {
     whereParts.push(`(
-      opportunity_number ILIKE $${paramIndex}
-      OR name ILIKE $${paramIndex}
-      OR contact_name ILIKE $${paramIndex}
-      OR contact_number ILIKE $${paramIndex}
-      OR contact_email ILIKE $${paramIndex}
-      OR company ILIKE $${paramIndex}
+      o.opportunity_number ILIKE $${paramIndex}
+      OR o.name ILIKE $${paramIndex}
+      OR o.contact_name ILIKE $${paramIndex}
+      OR o.contact_number ILIKE $${paramIndex}
+      OR o.contact_email ILIKE $${paramIndex}
+      OR o.company ILIKE $${paramIndex}
+      OR u.name ILIKE $${paramIndex}
     )`);
     values.push(`%${search}%`);
     paramIndex++;
   }
 
   if (opportunity_number) {
-    whereParts.push(`opportunity_number ILIKE $${paramIndex}`);
+    whereParts.push(`o.opportunity_number ILIKE $${paramIndex}`);
     values.push(`%${opportunity_number}%`);
     paramIndex++;
   }
 
   if (name) {
-    whereParts.push(`name ILIKE $${paramIndex}`);
+    whereParts.push(`o.name ILIKE $${paramIndex}`);
     values.push(`%${name}%`);
     paramIndex++;
   }
 
   if (sales_stage) {
-    whereParts.push(`sales_stage ILIKE $${paramIndex}`);
+    whereParts.push(`o.sales_stage ILIKE $${paramIndex}`);
     values.push(`%${sales_stage}%`);
     paramIndex++;
   }
 
   if (amount) {
-    whereParts.push(`CAST(amount AS TEXT) ILIKE $${paramIndex}`);
+    whereParts.push(`CAST(o.amount AS TEXT) ILIKE $${paramIndex}`);
     values.push(`%${amount}%`);
     paramIndex++;
   }
 
   if (close_date) {
-    whereParts.push(`CAST(close_date AS TEXT) ILIKE $${paramIndex}`);
+    whereParts.push(`CAST(o.close_date AS TEXT) ILIKE $${paramIndex}`);
     values.push(`%${close_date}%`);
     paramIndex++;
   }
 
   if (user) {
-    whereParts.push(`CAST(assigned_to AS TEXT) ILIKE $${paramIndex}`);
+    whereParts.push(`(
+      CAST(o.assigned_to AS TEXT) ILIKE $${paramIndex}
+      OR u.name ILIKE $${paramIndex}
+    )`);
     values.push(`%${user}%`);
     paramIndex++;
   }
 
   if (created_at) {
-    whereParts.push(`CAST(created_at AS TEXT) ILIKE $${paramIndex}`);
+    whereParts.push(`CAST(o.created_at AS TEXT) ILIKE $${paramIndex}`);
     values.push(`%${created_at}%`);
     paramIndex++;
   }
@@ -359,30 +363,25 @@ export async function getOpportunitiesHandler(
   try {
     const countQuery = `
       SELECT COUNT(*)::int AS total
-      FROM opportunities
+      FROM opportunities o
+      LEFT JOIN users u
+        ON u.id::text = o.assigned_to::text
+       AND u.tenant_id = o.tenant_id
       WHERE ${whereClause}
     `;
 
     const countResult = await pool.query(countQuery, values);
 
     const listQuery = `
-      SELECT
-        id,
-        tenant_id,
-        opportunity_number,
-        name,
-        sales_stage,
-        amount,
-        currency,
-        close_date,
-        assigned_to AS user_id,
-        contact_number AS phone,
-        contact_email AS email,
-        created_at,
-        updated_at
-      FROM opportunities
+      SELECT 
+        o.*,
+        u.name AS assigned_to_name
+      FROM opportunities o
+      LEFT JOIN users u
+        ON u.id::text = o.assigned_to::text
+       AND u.tenant_id = o.tenant_id
       WHERE ${whereClause}
-      ORDER BY created_at DESC
+      ORDER BY o.created_at DESC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
 

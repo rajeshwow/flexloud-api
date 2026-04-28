@@ -205,11 +205,52 @@ export async function getQuoteByIdHandler(
 
     const quoteResult = await pool.query(
       `
-      SELECT *
-      FROM quotes
-      WHERE id = $1
-        AND tenant_id = $2
-        AND deleted_at IS NULL
+      SELECT
+        q.*,
+
+        au.name AS assigned_to_name,
+        au.name AS assigned_to_name,
+        au.email AS assigned_to_email,
+
+        o.name AS organization_name,
+
+        c.first_name AS contact_first_name,
+        c.last_name AS contact_last_name,
+        CONCAT_WS(' ', c.first_name, c.last_name) AS contact_name,
+
+        l.first_name AS lead_first_name,
+        l.last_name AS lead_last_name,
+        CONCAT_WS(' ', l.first_name, l.last_name) AS lead_name,
+
+        op.name AS opportunity_name
+
+      FROM quotes q
+
+      LEFT JOIN users au
+        ON au.id = q.assigned_to
+
+      LEFT JOIN organizations o
+  ON o.id = q.organization_id
+  AND o.tenant_id = q.tenant_id
+
+      LEFT JOIN contacts c
+        ON c.id = q.contact_id
+        AND c.tenant_id = q.tenant_id
+      
+
+      LEFT JOIN leads l
+        ON l.id = q.lead_id
+        AND l.tenant_id = q.tenant_id
+      
+
+      LEFT JOIN opportunities op
+        ON op.id = q.opportunity_id
+        AND op.tenant_id = q.tenant_id
+        
+
+      WHERE q.id = $1
+        AND q.tenant_id = $2
+        AND q.deleted_at IS NULL
       `,
       [id, tenantId],
     );
