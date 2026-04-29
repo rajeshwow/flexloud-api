@@ -11,19 +11,65 @@ type UserContextRequest = Request & {
   };
 };
 
+const optionalNumber = z.coerce.number().optional().nullable();
+const optionalString = z.string().optional().nullable();
+const optionalUuid = z.string().uuid().optional().nullable();
+
 const lineItemSchema = z.object({
-  qty: z.number().optional().nullable(),
-  product_name: z.string().optional().nullable(),
-  part_no: z.string().optional().nullable(),
-  list_price: z.number().optional().nullable(),
-  discount: z.number().optional().nullable(),
-  discount_type: z.string().optional().nullable(),
-  sale_price: z.number().optional().nullable(),
-  tax_type: z.string().optional().nullable(),
-  tax_amount: z.number().optional().nullable(),
-  tax_rate: z.number().optional().nullable(),
-  total: z.number().optional().nullable(),
+  id: optionalUuid,
+  product_id: optionalUuid,
+
+  qty: optionalNumber,
+  quantity: optionalNumber,
+
+  product_name: optionalString,
+  sku: optionalString,
+  part_no: optionalString,
+
+  list_price: optionalNumber,
+  price: optionalNumber,
+
+  discount: optionalNumber,
+  discount_type: optionalString,
+
+  sale_price: optionalNumber,
+
+  tax_type: optionalString,
+  tax_amount: optionalNumber,
+  tax: optionalNumber,
+
+  total: optionalNumber,
+  amount: optionalNumber,
+
+  cgst: optionalNumber,
+  sgst: optionalNumber,
 });
+
+function normalizeLineItem(item: z.infer<typeof lineItemSchema>) {
+  const qty = Number(item.qty ?? item.quantity ?? 0);
+  const listPrice = Number(item.list_price ?? item.price ?? 0);
+  const discount = Number(item.discount ?? 0);
+  const taxRate = Number(item.tax ?? 0);
+
+  const salePrice = Math.max(qty * listPrice - discount, 0);
+  const taxAmount = Number(((salePrice * taxRate) / 100).toFixed(2));
+  const total = Number((salePrice + taxAmount).toFixed(2));
+
+  return {
+    product_id: item.product_id ?? null,
+    qty,
+    product_name: item.product_name ?? null,
+    part_no: item.part_no ?? item.sku ?? null,
+    list_price: listPrice,
+    discount,
+    discount_type: item.discount_type ?? "Flat",
+    sale_price: salePrice,
+    tax_type: item.tax_type ?? "GST",
+    tax_amount: taxAmount,
+    tax: taxRate,
+    total,
+  };
+}
 
 const createOpportunitySchema = z.object({
   opportunity_number: z.string().optional().nullable(),
@@ -201,45 +247,48 @@ RETURNING *
 
     for (const item of input.line_items || []) {
       const lineItemId = randomUUID();
+      const normalizedItem = normalizeLineItem(item);
 
       await client.query(
         `
-          INSERT INTO opportunity_line_items (
-            id,
-            tenant_id,
-            opportunity_id,
-            qty,
-            product_name,
-            part_no,
-            list_price,
-            discount,
-            discount_type,
-            sale_price,
-            tax_type,
-            tax_amount,
-            tax_rate,
-            total
-          )
-          VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11, $12, $13, $14
-          )
-        `,
+      INSERT INTO opportunity_line_items (
+        id,
+        tenant_id,
+        opportunity_id,
+        product_id,
+        qty,
+        product_name,
+        part_no,
+        list_price,
+        discount,
+        discount_type,
+        sale_price,
+        tax_type,
+        tax_amount,
+        tax,
+        total
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15
+      )
+    `,
         [
           lineItemId,
           tenantId,
           opportunityId,
-          item.qty ?? null,
-          item.product_name ?? null,
-          item.part_no ?? null,
-          item.list_price ?? null,
-          item.discount ?? null,
-          item.discount_type ?? null,
-          item.sale_price ?? null,
-          item.tax_type ?? null,
-          item.tax_amount ?? null,
-          item.tax_rate ?? null,
-          item.total ?? null,
+          normalizedItem.product_id,
+          normalizedItem.qty,
+          normalizedItem.product_name,
+          normalizedItem.part_no,
+          normalizedItem.list_price,
+          normalizedItem.discount,
+          normalizedItem.discount_type,
+          normalizedItem.sale_price,
+          normalizedItem.tax_type,
+          normalizedItem.tax_amount,
+          normalizedItem.tax,
+          normalizedItem.total,
         ],
       );
     }
@@ -414,13 +463,23 @@ export async function getOpportunityByIdHandler(
   try {
     const opportunityResult = await pool.query(
       `
-        SELECT *
-        FROM opportunities
-        WHERE tenant_id = $1
-          AND id = $2
-          AND deleted_at IS NULL
-        LIMIT 1
-      `,
+    SELECT 
+      o.*,
+      org.name AS organization_display_name,
+      TRIM(CONCAT(c.first_name, ' ', c.last_name)) AS contact_display_name,
+      CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) AS assigned_to_name
+    FROM opportunities o
+    LEFT JOIN organizations org 
+      ON org.id::text = o.organization_name::text
+    LEFT JOIN contacts c 
+      ON c.id::text = o.contact_name::text
+    LEFT JOIN users u 
+      ON u.id::text = o.assigned_to::text
+    WHERE o.tenant_id::text = $1::text
+      AND o.id::text = $2::text
+      AND o.deleted_at IS NULL
+    LIMIT 1
+  `,
       [tenantId, id],
     );
 
@@ -430,11 +489,18 @@ export async function getOpportunityByIdHandler(
 
     const lineItemsResult = await pool.query(
       `
-        SELECT *
-        FROM opportunity_line_items
-        WHERE tenant_id = $1 AND opportunity_id = $2
-        ORDER BY created_at ASC
-      `,
+    SELECT
+      oli.*,
+      oli.product_id,
+      COALESCE(p.name, oli.product_name) AS product_name
+    FROM opportunity_line_items oli
+    LEFT JOIN products p
+      ON p.id::text = oli.product_id::text
+     AND p.tenant_id::text = oli.tenant_id::text
+    WHERE oli.tenant_id::text = $1::text
+      AND oli.opportunity_id::text = $2::text
+    ORDER BY oli.created_at ASC
+  `,
       [tenantId, id],
     );
 
@@ -443,6 +509,7 @@ export async function getOpportunityByIdHandler(
         ...opportunityResult.rows[0],
         line_items: lineItemsResult.rows,
       },
+      message: "Opportunity fetched successfully",
     });
   } catch (error) {
     console.error("getOpportunityByIdHandler error:", error);
@@ -454,7 +521,8 @@ export async function updateOpportunityHandler(
   req: UserContextRequest,
   res: Response,
 ) {
-  const parsed = updateOpportunitySchema.safeParse(req.body);
+  const dataToParse = req.body.payload || req.body;
+  const parsed = updateOpportunitySchema.safeParse(dataToParse) as any;
 
   if (!parsed.success) {
     return res.status(400).json({
@@ -473,6 +541,8 @@ export async function updateOpportunityHandler(
 
   const input = parsed.data;
   const client = await pool.connect();
+
+  const inputLineItems = input.line_items ?? input.line_Items;
 
   try {
     await client.query("BEGIN");
@@ -554,57 +624,48 @@ export async function updateOpportunityHandler(
       input.campaign ?? null,
       userId,
     ]);
-
-    if (input.line_items) {
+    if (Array.isArray(inputLineItems)) {
       await client.query(
         `
-          DELETE FROM opportunity_line_items
-          WHERE tenant_id = $1 AND opportunity_id = $2
-        `,
+      DELETE FROM opportunity_line_items
+      WHERE tenant_id = $1 AND opportunity_id = $2
+    `,
         [tenantId, id],
       );
 
-      for (const item of input.line_items) {
+      for (const item of inputLineItems) {
         const lineItemId = randomUUID();
+        const normalizedItem = normalizeLineItem(item);
 
         await client.query(
           `
-            INSERT INTO opportunity_line_items (
-              id,
-              tenant_id,
-              opportunity_id,
-              qty,
-              product_name,
-              part_no,
-              list_price,
-              discount,
-              discount_type,
-              sale_price,
-              tax_type,
-              tax_amount,
-              tax_rate,
-              total
-            )
-            VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-              $11, $12, $13, $14
-            )
-          `,
+        INSERT INTO opportunity_line_items (
+          id, tenant_id, opportunity_id, product_id,
+          qty, product_name, part_no, list_price,
+          discount, discount_type, sale_price,
+          tax_type, tax_amount, tax, total
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13, $14, $15
+        )
+      `,
           [
             lineItemId,
             tenantId,
             id,
-            item.qty ?? null,
-            item.product_name ?? null,
-            item.part_no ?? null,
-            item.list_price ?? null,
-            item.discount ?? null,
-            item.discount_type ?? null,
-            item.sale_price ?? null,
-            item.tax_type ?? null,
-            item.tax_amount ?? null,
-            item.tax_rate ?? null,
-            item.total ?? null,
+            normalizedItem.product_id,
+            normalizedItem.qty,
+            normalizedItem.product_name,
+            normalizedItem.part_no,
+            normalizedItem.list_price,
+            normalizedItem.discount,
+            normalizedItem.discount_type,
+            normalizedItem.sale_price,
+            normalizedItem.tax_type,
+            normalizedItem.tax_amount,
+            normalizedItem.tax,
+            normalizedItem.total,
           ],
         );
       }
