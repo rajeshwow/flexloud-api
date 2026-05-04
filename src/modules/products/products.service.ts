@@ -63,6 +63,7 @@ class ProductsService {
         tax,
         opening_stock, opening_stock_value, stock_on_hand, committed_stock,
         available_for_sale, qty_to_be_invoiced_shipped, qty_to_be_received_billed,
+        source,
         created_by, updated_by
       )
       VALUES (
@@ -75,6 +76,7 @@ class ProductsService {
         $18,
         $19, $20, $21, $22,
         $23, $24, $25,
+        'tally',
         $26, $27
       )
       RETURNING *;

@@ -57,6 +57,7 @@ type CreateOrganizationInput = {
   } | null;
 
   branches: BranchInput[];
+  source?: "system" | "tally" | null;
 };
 
 type UpdateOrganizationInput = {
@@ -131,6 +132,7 @@ const BaseOrganizationSchema = z
   .object({
     name: z.string().min(2, "Name is required"),
     gst_number: z.string().optional().nullable(),
+    source: z.enum(["system", "tally"]).optional().default("system"),
     email: z
       .string()
       .email("Invalid email")
@@ -226,6 +228,7 @@ async function getOrganizationRowById(
       industry_mv.value AS industry_value,
       o.assigned_to,
       u.name AS assigned_to_name,
+o.source,
 
       o.registered_street,
       o.registered_area,
@@ -368,12 +371,13 @@ export const organizationsService = {
           registered_city_id,
           registered_state_id,
           registered_country_id,
+          source,
           created_by,
           updated_by
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, $11, $12, $13, $14, $15, $16
+          $9, $10, $11, $12, $13, $14,$15, $16, $17
         )
         RETURNING *;
       `;
@@ -393,6 +397,7 @@ export const organizationsService = {
         input.registered_address?.city_id || null,
         input.registered_address?.state_id || null,
         input.registered_address?.country_id || null,
+        input.source || "system",
         input.createdBy,
         input.updatedBy,
       ];
@@ -530,6 +535,7 @@ export const organizationsService = {
         industry_mv.label AS industry_name,
         industry_mv.value AS industry_value,
         o.assigned_to,
+        o.source,
 
         o.registered_street,
         o.registered_area,
@@ -659,6 +665,7 @@ export const organizationsService = {
           registered_state_id = $14,
           registered_country_id = $15,
           updated_by = $16,
+          source = $17,
           updated_at = NOW()
         WHERE tenant_id = $1
           AND id = $2
