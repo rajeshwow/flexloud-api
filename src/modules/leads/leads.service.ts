@@ -38,7 +38,7 @@ type CreateLeadInput = {
   dealer_organization?: string | null;
 
   status_id?: string | null;
-  product_category: string;
+  product_category?: string | null;
   priority_id?: string | null;
 
   requirements?: string | null;
@@ -493,7 +493,7 @@ export const leadsService = {
         input.emails ? JSON.stringify(input.emails) : null,
         input.dealer_organization ?? null,
         input.status_id ?? null,
-        input.product_category,
+        input.product_category ?? null,
         input.priority_id ?? null,
         input.requirements ?? null,
         input.next_followup ?? null,

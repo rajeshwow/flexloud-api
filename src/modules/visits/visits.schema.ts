@@ -21,7 +21,7 @@ export const CreateVisitSchema = z.object({
   checkin_captured_at: z.string().datetime().nullable().optional(),
   checkout_captured_at: z.string().datetime().nullable().optional(),
 
-  remarks: z.string().trim().min(1, "Remarks is required"),
+  remarks: z.string().trim().optional(),
 
   assigned_to_user_id: z.string().uuid().nullable().optional(),
   organization_id: z.string().uuid().nullable().optional(),

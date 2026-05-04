@@ -24,7 +24,7 @@ export const CreateLeadSchema = z.object({
   dealer_organization: z.string().optional().nullable(),
 
   status_id: z.string().uuid().optional(),
-  product_category: z.string().min(1, "Product category is required"),
+  product_category: z.string().optional().nullable(),
   priority_id: z.string().uuid().optional(),
 
   requirements: z.string().optional().nullable(),
