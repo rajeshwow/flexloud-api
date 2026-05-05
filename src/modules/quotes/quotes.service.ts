@@ -400,6 +400,159 @@ export async function createQuoteHandler(
       ],
     );
 
+    async function getQuoteDetailsForResponse(
+      client: any,
+      tenantId: string,
+      quoteId: string,
+    ) {
+      const quoteResult = await client.query(
+        `
+    SELECT
+      q.*,
+
+      au.name AS assigned_to_name,
+      au.email AS assigned_to_email,
+
+      o.id AS organization_id,
+      o.name AS organization_name,
+      o.email AS organization_email,
+      o.gst_number AS organization_gst_number,
+      o.type AS organization_type,
+      o.industry AS organization_industry,
+
+      o.registered_street AS organization_registered_street,
+      o.registered_area AS organization_registered_area,
+      o.registered_postal_code AS organization_registered_postal_code,
+      o.registered_city AS organization_registered_city,
+      o.registered_state AS organization_registered_state,
+      o.registered_country AS organization_registered_country,
+
+      o.registered_city_id AS organization_registered_city_id,
+      o.registered_state_id AS organization_registered_state_id,
+      o.registered_country_id AS organization_registered_country_id,
+
+      c.id AS contact_id,
+      c.first_name AS contact_first_name,
+      c.last_name AS contact_last_name,
+      CONCAT_WS(' ', c.first_name, c.last_name) AS contact_name,
+      c.email AS contact_email,
+      c.mobile AS contact_mobile,
+
+      l.id AS lead_id,
+      CONCAT_WS(' ', l.first_name, l.last_name) AS lead_name,
+
+      op.id AS opportunity_id,
+      op.name AS opportunity_name
+
+    FROM quotes q
+    LEFT JOIN users au
+      ON au.id = q.assigned_to
+    LEFT JOIN organizations o
+      ON o.id = q.organization_id
+      AND o.tenant_id = q.tenant_id
+    LEFT JOIN contacts c
+      ON c.id = q.contact_id
+      AND c.tenant_id = q.tenant_id
+    LEFT JOIN leads l
+      ON l.id = q.lead_id
+      AND l.tenant_id = q.tenant_id
+    LEFT JOIN opportunities op
+      ON op.id = q.opportunity_id
+      AND op.tenant_id = q.tenant_id
+    WHERE q.id = $1
+      AND q.tenant_id = $2
+      AND q.deleted_at IS NULL
+    LIMIT 1
+    `,
+        [quoteId, tenantId],
+      );
+
+      if (!quoteResult.rowCount) return null;
+
+      const itemsResult = await client.query(
+        `
+    SELECT
+      qi.*,
+      p.name AS product_display_name,
+      p.part_number,
+      p.hsn_code AS product_hsn_code
+    FROM quote_line_items qi
+    LEFT JOIN products p
+      ON p.id = qi.product_id
+      AND p.tenant_id = qi.tenant_id
+    WHERE qi.quote_id = $1
+      AND qi.tenant_id = $2
+      AND qi.deleted_at IS NULL
+    ORDER BY qi.sort_order ASC, qi.created_at ASC
+    `,
+        [quoteId, tenantId],
+      );
+
+      const quote = quoteResult.rows[0];
+
+      return {
+        ...quote,
+
+        organization: quote.organization_id
+          ? {
+              id: quote.organization_id,
+              name: quote.organization_name,
+              email: quote.organization_email,
+              gst_number: quote.organization_gst_number,
+              type: quote.organization_type,
+              industry: quote.organization_industry,
+
+              registered_address: {
+                street: quote.organization_registered_street,
+                area: quote.organization_registered_area,
+                postal_code: quote.organization_registered_postal_code,
+                city: quote.organization_registered_city,
+                state: quote.organization_registered_state,
+                country: quote.organization_registered_country,
+                city_id: quote.organization_registered_city_id,
+                state_id: quote.organization_registered_state_id,
+                country_id: quote.organization_registered_country_id,
+              },
+            }
+          : null,
+
+        contact: quote.contact_id
+          ? {
+              id: quote.contact_id,
+              first_name: quote.contact_first_name,
+              last_name: quote.contact_last_name,
+              name: quote.contact_name,
+              email: quote.contact_email,
+              mobile: quote.contact_mobile,
+            }
+          : null,
+
+        opportunity: quote.opportunity_id
+          ? {
+              id: quote.opportunity_id,
+              name: quote.opportunity_name,
+            }
+          : null,
+
+        lead: quote.lead_id
+          ? {
+              id: quote.lead_id,
+              name: quote.lead_name,
+            }
+          : null,
+
+        assigned_user: quote.assigned_to
+          ? {
+              id: quote.assigned_to,
+              name: quote.assigned_to_name,
+              email: quote.assigned_to_email,
+            }
+          : null,
+
+        line_items: itemsResult.rows,
+      };
+    }
+
     await insertQuoteItems(client, tenantId, quoteId, line_items);
 
     await insertQuoteActivity(client, {
@@ -420,13 +573,23 @@ export async function createQuoteHandler(
       },
     });
 
+    const createdQuote = await getQuoteDetailsForResponse(
+      client,
+      tenantId,
+      quoteId,
+    );
+
     await client.query("COMMIT");
 
     res.status(201).json({
+      data: {
+        message: "Quote created successfully",
+        id: quoteId,
+        quote_number: quoteNumber,
+        data: createdQuote,
+      },
       success: true,
-      message: "Quote created successfully",
-      id: quoteId,
-      quote_number: quoteNumber,
+      statusCode: 201,
     });
   } catch (err) {
     await client.query("ROLLBACK");

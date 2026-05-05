@@ -15,6 +15,7 @@ import aiInsightsRouter from "./modules/ai-insights/ai-insights.routes";
 import attendanceRouter from "./modules/attendance/attendance.routes";
 import contactsRouter from "./modules/contacts/contacts.routes";
 import dashboardRouter from "./modules/dashboard/dashboard.routes";
+import deliveryChallansRouter from "./modules/delivery-challans/deliveryChallans.routes";
 import geoVisitsRouter from "./modules/geo-visits/geo-visits.routes";
 import importsRouter from "./modules/imports/imports.routes";
 import interactionsRouter from "./modules/interactions/interactions.routes";
@@ -97,6 +98,7 @@ export function createApp() {
   app.use("/v1/:slug/tally", tallyRouter);
   app.use("/v1/:slug/purchase-orders", purchaseOrderRouter);
   app.use("/v1/:slug/sales-orders", salesOrdersRouter);
+  app.use("/v1/:slug/delivery-challans", deliveryChallansRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
