@@ -4,6 +4,7 @@ export type ImportFieldType =
   | "string"
   | "email"
   | "mobile"
+  | "phone"
   | "number"
   | "date"
   | "boolean"
