@@ -32,58 +32,16 @@ type BranchInput = {
   is_shipping_same_as_billing?: boolean;
   status?: "active" | "inactive";
 };
-
-type CreateOrganizationInput = {
+type CreateOrganizationInput = z.infer<typeof CreateOrganizationSchema> & {
   tenantId: string;
   createdBy: string | null;
   updatedBy: string | null;
-
-  name: string;
-  gst_number?: string | null;
-  email?: string | null;
-  next_followup_at?: string | null;
-
-  type?: string | null;
-  industry?: string | null;
-  assigned_to?: string | null;
-
-  registered_address?: {
-    street?: string | null;
-    area?: string | null;
-    postal_code?: string | null;
-    city_id?: string | null;
-    state_id?: string | null;
-    country_id?: string | null;
-  } | null;
-
-  branches: BranchInput[];
-  source?: "system" | "tally" | null;
 };
 
-type UpdateOrganizationInput = {
+type UpdateOrganizationInput = z.infer<typeof UpdateOrganizationSchema> & {
   tenantId: string;
   organizationId: string;
   updatedBy: string | null;
-
-  name: string;
-  gst_number?: string | null;
-  email?: string | null;
-  next_followup_at?: string | null;
-
-  type?: string | null;
-  industry?: string | null;
-  assigned_to?: string | null;
-
-  registered_address?: {
-    street?: string | null;
-    area?: string | null;
-    postal_code?: string | null;
-    city_id?: string | null;
-    state_id?: string | null;
-    country_id?: string | null;
-  } | null;
-
-  branches: BranchInput[];
 };
 
 type GetAllOrganizationsInput = {
@@ -794,9 +752,9 @@ export async function createOrganizationHandler(
     const parsed = CreateOrganizationSchema.parse(req.body);
 
     const result = await organizationsService.create({
-      tenantId,
-      createdBy,
-      updatedBy,
+      tenantId: tenantId,
+      createdBy: createdBy,
+      updatedBy: updatedBy,
       ...parsed,
     });
 

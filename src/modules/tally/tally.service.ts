@@ -1339,10 +1339,10 @@ export async function saveTallyConnectionHandler(
     const body = UpsertTallyConnectionSchema.parse(req.body);
 
     const data = await saveTallyConnection({
+      ...body,
       tenantId,
       userId,
-      ...body,
-    });
+    } as any);
 
     res.json({
       message: "Tally connection saved successfully",

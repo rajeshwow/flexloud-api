@@ -4,7 +4,7 @@ import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 
 type ContactEmailItem = {
-  email: string;
+  email?: string;
   primary?: boolean;
   opt_out?: boolean;
   invalid?: boolean;

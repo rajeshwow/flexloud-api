@@ -920,12 +920,12 @@ export async function createLeadHandler(
     const body = CreateLeadSchema.parse(req.body);
 
     const lead = await leadsService.create({
+      ...body,
       tenantId,
       lead_number: body.lead_number,
       createdBy: userId,
       updatedBy: userId,
-      ...body,
-    });
+    } as CreateLeadInput);
 
     return res.status(201).json({
       message: "Lead created successfully",
@@ -1005,7 +1005,7 @@ export async function updateLeadHandler(
       leadId,
       updatedBy: userId,
       ...body,
-    });
+    } as UpdateLeadInput);
 
     if (!updatedLead) {
       return res.status(404).json({

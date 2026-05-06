@@ -219,11 +219,11 @@ export async function createProductHandler(
     const userId = req.user?.id ?? null;
 
     const product = await productsService.create({
+      ...parsed.body,
       tenantId,
       createdBy: userId,
       updatedBy: userId,
-      ...parsed.body,
-    });
+    } as CreateProductInput);
 
     return res.status(201).json({
       statusCode: 201,
@@ -245,9 +245,9 @@ export async function getProductsHandler(
     const tenantId = getTenantId(req);
 
     const result = await productsService.getAll({
-      tenantId,
       ...parsed.query,
-    });
+      tenantId,
+    } as GetProductsInput);
 
     return res.status(200).json({
       statusCode: 200,
