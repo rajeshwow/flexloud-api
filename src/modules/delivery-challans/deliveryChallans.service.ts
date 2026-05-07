@@ -1,4 +1,8 @@
 import { Request, Response } from "express";
+import nodemailer from "nodemailer";
+import puppeteer from "puppeteer";
+
+import dayjs from "dayjs";
 import { pool } from "../../db/pool";
 import {
   CreateDeliveryChallanSchema,
@@ -148,14 +152,430 @@ export async function listDeliveryChallansHandler(
     params,
   );
 
-  return res.json({
-    data: result.rows,
-    meta: {
-      page: query.page,
-      limit: query.limit,
-      total: countResult.rows[0]?.total || 0,
+  return res.status(200).json({
+    statusCode: 200,
+    message: "Delivery challans fetched successfully",
+    data: {
+      list: result.rows,
+      meta: {
+        page: query.page,
+        limit: query.limit,
+        total: countResult.rows[0]?.total || 0,
+      },
     },
   });
+}
+
+async function generatePdfBufferFromHtml(html: string) {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+
+    const pdfBuffer = await page.pdf({
+      format: "A4",
+      printBackground: true,
+      margin: {
+        top: "12mm",
+        right: "12mm",
+        bottom: "12mm",
+        left: "12mm",
+      },
+    });
+
+    return Buffer.from(pdfBuffer);
+  } finally {
+    await browser.close();
+  }
+}
+
+export async function sendDeliveryChallanEmailHandler(
+  req: UserContextRequest,
+  res: Response,
+) {
+  const tenantId = getTenantId(req);
+  const { id } = req.params;
+
+  const { to, cc, bcc, subject, body, attachPdf = true } = req.body || {};
+
+  if (!tenantId) {
+    return res.status(401).json({
+      statusCode: 401,
+      message: "Unauthorized: tenantId missing",
+      data: null,
+    });
+  }
+
+  try {
+    const challanResult = await pool.query(
+      `
+        SELECT *
+        FROM delivery_challans
+        WHERE tenant_id = $1
+          AND id = $2
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [tenantId, id],
+    );
+
+    if (!challanResult.rows.length) {
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Delivery challan not found",
+        data: null,
+      });
+    }
+
+    const challan = challanResult.rows[0];
+    const sendTo = to || challan.customer_email;
+
+    if (!sendTo) {
+      return res.status(400).json({
+        statusCode: 400,
+        message: "Customer email not found",
+        data: null,
+      });
+    }
+
+    const itemsResult = await pool.query(
+      `
+        SELECT *
+        FROM delivery_challan_items
+        WHERE tenant_id = $1
+          AND delivery_challan_id = $2
+        ORDER BY created_at ASC
+      `,
+      [tenantId, id],
+    );
+
+    const items = itemsResult.rows;
+
+    const taxAmount = items.reduce((sum: number, item: any) => {
+      return sum + Number(item.cgst || 0) + Number(item.sgst || 0);
+    }, 0);
+
+    const discountAmount = Number(
+      challan.discount_amount || challan.discount || 0,
+    );
+
+    const itemsRowsHtml = items
+      .map(
+        (item: any, index: number) => `
+          <tr>
+            <td class="center">${index + 1}</td>
+            <td>
+              <b>${item.item_name || item.product_name || "-"}</b>
+              ${item.sku ? `<br/><small>SKU: ${item.sku}</small>` : ""}
+            </td>
+            <td class="right">${Number(item.quantity || 0).toFixed(2)}</td>
+            <td class="right">${Number(item.rate || 0).toFixed(2)}</td>
+            <td class="right">${Number(item.amount || 0).toFixed(2)}</td>
+          </tr>
+        `,
+      )
+      .join("");
+
+    let pdfBuffer: Buffer | null = null;
+
+    if (attachPdf) {
+      const pdfHtml = `
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <style>
+              * {
+                box-sizing: border-box;
+              }
+
+              body {
+                margin: 0;
+                padding: 28px;
+                font-family: Arial, Helvetica, sans-serif;
+                color: #111827;
+                font-size: 13px;
+              }
+
+              .top {
+                display: flex;
+                justify-content: space-between;
+                gap: 24px;
+                margin-bottom: 30px;
+              }
+
+              .company-name {
+                font-size: 22px;
+                font-weight: 800;
+                margin-bottom: 6px;
+              }
+
+              .title {
+                text-align: right;
+                font-size: 34px;
+                font-weight: 800;
+                line-height: 1.05;
+                letter-spacing: 1px;
+              }
+
+              .doc-no {
+                text-align: right;
+                margin-top: 12px;
+                font-size: 14px;
+              }
+
+              .info {
+                display: flex;
+                justify-content: space-between;
+                gap: 24px;
+                margin-bottom: 26px;
+              }
+
+              .label {
+                color: #6b7280;
+                font-size: 12px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: .5px;
+                margin-bottom: 8px;
+              }
+
+              .meta-line {
+                margin-bottom: 7px;
+              }
+
+              table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 12px;
+              }
+
+              th {
+                background: #111827;
+                color: #ffffff;
+                padding: 10px;
+                font-size: 12px;
+                text-align: left;
+                border: 1px solid #111827;
+              }
+
+              td {
+                border: 1px solid #e5e7eb;
+                padding: 10px;
+                vertical-align: top;
+              }
+
+              .right {
+                text-align: right;
+              }
+
+              .center {
+                text-align: center;
+              }
+
+              .summary {
+                width: 320px;
+                margin-left: auto;
+                margin-top: 26px;
+              }
+
+              .summary-row {
+                display: flex;
+                justify-content: space-between;
+                border-bottom: 1px solid #e5e7eb;
+                padding: 8px 0;
+              }
+
+              .total {
+                font-size: 17px;
+                font-weight: 800;
+                border-top: 2px solid #111827;
+                margin-top: 8px;
+                padding-top: 12px;
+              }
+
+              .signature {
+                margin-top: 90px;
+                text-align: right;
+                font-weight: 700;
+              }
+            </style>
+          </head>
+
+          <body>
+            <div class="top">
+              <div>
+                <div class="company-name">FlexLoud</div>
+                <div>Rajasthan</div>
+                <div>India</div>
+                <div>rajesh007prajapati@gmail.com</div>
+              </div>
+
+              <div>
+                <div class="title">DELIVERY<br/>CHALLAN</div>
+                <div class="doc-no">
+                  Delivery Challan# <b>${challan.challan_number || "-"}</b>
+                </div>
+              </div>
+            </div>
+
+            <div class="info">
+              <div>
+                <div class="label">Deliver To</div>
+                <b>${challan.customer_name || "-"}</b>
+                ${challan.customer_email ? `<div>${challan.customer_email}</div>` : ""}
+                ${challan.customer_phone ? `<div>${challan.customer_phone}</div>` : ""}
+              </div>
+
+              <div>
+                <div class="meta-line">
+                  Challan Date : <b>${dayjs(challan.challan_date).format("DD-MM-YYYY HH:mm:ss A") || "-"}</b>
+                </div>
+                <div class="meta-line">
+                  Challan Type : <b>${challan.challan_type || "-"}</b>
+                </div>
+                <div class="meta-line">
+                  Reference : <b>${challan.reference_no || "-"}</b>
+                </div>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:50px;" class="center">#</th>
+                  <th>Item & Description</th>
+                  <th class="right">Qty</th>
+                  <th class="right">Rate</th>
+                  <th class="right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${
+                  itemsRowsHtml ||
+                  `<tr><td colspan="5" class="center">No items added</td></tr>`
+                }
+              </tbody>
+            </table>
+
+            <div class="summary">
+              <div class="summary-row">
+                <span>Sub Total</span>
+                <b>₹${Number(challan.subtotal || 0).toFixed(2)}</b>
+              </div>
+
+              <div class="summary-row">
+                <span>Tax</span>
+                <b> (+) ₹${taxAmount.toFixed(2)}</b>
+              </div>
+              ${
+                discountAmount > 0
+                  ? `
+      <div class="summary-row">
+        <span>Discount</span>
+        <b>(-) ₹${discountAmount.toFixed(2)}</b>
+      </div>
+    `
+                  : ""
+              }
+
+              <div class="summary-row total">
+                <span>Total</span>
+                <span>₹${Number(challan.total || 0).toFixed(2)}</span>
+              </div>
+            </div>
+
+            <div class="signature">Authorized Signature</div>
+          </body>
+        </html>
+      `;
+
+      const browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+
+      try {
+        const page = await browser.newPage();
+        await page.setContent(pdfHtml, { waitUntil: "networkidle0" });
+
+        const pdf = await page.pdf({
+          format: "A4",
+          printBackground: true,
+          margin: {
+            top: "12mm",
+            right: "12mm",
+            bottom: "12mm",
+            left: "12mm",
+          },
+        });
+
+        pdfBuffer = Buffer.from(pdf);
+      } finally {
+        await browser.close();
+      }
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || "smtp.gmail.com",
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: Number(process.env.SMTP_PORT || 587) === 465,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: sendTo,
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      subject: subject || `Delivery Challan ${challan.challan_number}`,
+      html:
+        body ||
+        `
+          <div style="font-family:Arial,sans-serif;color:#111827;">
+            <h2>Delivery Challan</h2>
+            <p>Hello ${challan.customer_name || "Customer"},</p>
+            <p>Please find attached your delivery challan.</p>
+            <p>Regards,<br/>FlexLoud</p>
+          </div>
+        `,
+      attachments: pdfBuffer
+        ? [
+            {
+              filename: `${challan.challan_number || "delivery-challan"}.pdf`,
+              content: pdfBuffer,
+              contentType: "application/pdf",
+            },
+          ]
+        : [],
+    });
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Delivery challan email sent successfully",
+      data: {
+        id: challan.id,
+        challan_number: challan.challan_number,
+        sent_to: sendTo,
+        pdf_attached: Boolean(pdfBuffer),
+      },
+    });
+  } catch (error) {
+    console.error("Send delivery challan email error:", error);
+
+    return res.status(500).json({
+      statusCode: 500,
+      message: "Failed to send delivery challan email",
+      data: null,
+    });
+  }
 }
 
 export async function getDeliveryChallanByIdHandler(
