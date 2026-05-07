@@ -30,6 +30,7 @@ import purchaseOrderRouter from "./modules/purchase-orders/purchase-orders.route
 import quotesRouter from "./modules/quotes/quotes.routes";
 import rbacRouter from "./modules/rbac/rbac.routes";
 import salesOrdersRouter from "./modules/sales-orders/sales-orders.routes";
+import tallyPerformanceRouter from "./modules/tally-performance/tallyPerformance.routes";
 import tallyRouter from "./modules/tally/tally.routes";
 import tasksRouter from "./modules/tasks/tasks.routes";
 import usersRouter from "./modules/users/users.routes";
@@ -99,6 +100,7 @@ export function createApp() {
   app.use("/v1/:slug/purchase-orders", purchaseOrderRouter);
   app.use("/v1/:slug/sales-orders", salesOrdersRouter);
   app.use("/v1/:slug/delivery-challans", deliveryChallansRouter);
+  app.use("/v1/:slug/tally-performance", tallyPerformanceRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

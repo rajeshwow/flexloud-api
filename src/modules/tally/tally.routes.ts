@@ -4,6 +4,7 @@ import {
   getTallySyncErrorsHandler,
   getTallySyncHistoryHandler,
   pullTallyLedgersHandler,
+  pullTallyOutstandingsHandler,
   pullTallyPurchaseOrdersHandler,
   pullTallySalesOrdersHandler,
   pullTallyStockItemsHandler,
@@ -17,6 +18,7 @@ tallyRouter.post("/connection", saveTallyConnectionHandler);
 
 tallyRouter.post("/pull/ledgers", pullTallyLedgersHandler);
 tallyRouter.post("/pull/stock-items", pullTallyStockItemsHandler);
+tallyRouter.post("/pull/outstandings", pullTallyOutstandingsHandler);
 
 tallyRouter.post("/pull/purchase-orders", pullTallyPurchaseOrdersHandler);
 tallyRouter.post("/pull/sales-orders", pullTallySalesOrdersHandler);

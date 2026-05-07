@@ -23,6 +23,50 @@ type TallyVoucherItemPayload = {
   unit?: string | null;
 };
 
+type TallyOutstandingPayload = {
+  guid?: string | null;
+  tallyGuid?: string | null;
+
+  ledgerGuid?: string | null;
+  ledger_guid?: string | null;
+
+  ledgerName?: string | null;
+  ledger_name?: string | null;
+  partyName?: string | null;
+  party_name?: string | null;
+
+  voucherGuid?: string | null;
+  voucher_guid?: string | null;
+
+  voucherNumber?: string | null;
+  voucher_number?: string | null;
+
+  voucherType?: string | null;
+  voucher_type?: string | null;
+
+  voucherDate?: string | null;
+  voucher_date?: string | null;
+
+  dueDate?: string | null;
+  due_date?: string | null;
+
+  billRef?: string | null;
+  bill_ref?: string | null;
+  reference?: string | null;
+
+  billType?: string | null;
+  bill_type?: string | null;
+
+  billAmount?: number | string | null;
+  bill_amount?: number | string | null;
+  amount?: number | string | null;
+
+  pendingAmount?: number | string | null;
+  pending_amount?: number | string | null;
+  outstandingAmount?: number | string | null;
+  outstanding_amount?: number | string | null;
+};
+
 type TallyVoucherPayload = {
   guid?: string | null;
   masterId?: string | number | null;
@@ -84,6 +128,81 @@ function normalizeDate(value: any) {
   }
 
   return v;
+}
+
+function normalizeBillType(value: any) {
+  const v = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    v === "payable" ||
+    v === "payables" ||
+    v === "purchase" ||
+    v === "creditor" ||
+    v === "sundry creditor" ||
+    v === "sundry creditors"
+  ) {
+    return "payable";
+  }
+
+  return "receivable";
+}
+
+function normalizeOutstandingRow(row: TallyOutstandingPayload) {
+  const ledgerGuid =
+    cleanText(row.ledgerGuid) ||
+    cleanText(row.ledger_guid) ||
+    cleanText(row.tallyGuid) ||
+    cleanText(row.guid);
+
+  const ledgerName =
+    cleanText(row.ledgerName) ||
+    cleanText(row.ledger_name) ||
+    cleanText(row.partyName) ||
+    cleanText(row.party_name);
+
+  const voucherNumber =
+    cleanText(row.voucherNumber) || cleanText(row.voucher_number);
+
+  const billRef =
+    cleanText(row.billRef) ||
+    cleanText(row.bill_ref) ||
+    cleanText(row.reference) ||
+    voucherNumber ||
+    ledgerName;
+
+  return {
+    tally_guid: cleanText(row.tallyGuid) || cleanText(row.guid) || ledgerGuid,
+    ledger_guid: ledgerGuid,
+    ledger_name: ledgerName,
+
+    voucher_guid: cleanText(row.voucherGuid) || cleanText(row.voucher_guid),
+
+    voucher_number: voucherNumber,
+
+    voucher_type: cleanText(row.voucherType) || cleanText(row.voucher_type),
+
+    voucher_date:
+      normalizeDate(row.voucherDate) || normalizeDate(row.voucher_date),
+
+    due_date: normalizeDate(row.dueDate) || normalizeDate(row.due_date),
+
+    bill_ref: billRef,
+
+    bill_type: normalizeBillType(row.billType || row.bill_type),
+
+    bill_amount: toNumber(row.billAmount ?? row.bill_amount ?? row.amount, 0),
+
+    pending_amount: toNumber(
+      row.pendingAmount ??
+        row.pending_amount ??
+        row.outstandingAmount ??
+        row.outstanding_amount ??
+        row.amount,
+      0,
+    ),
+  };
 }
 
 async function createJob(input: {
@@ -426,6 +545,52 @@ export async function pullTallyLedgers(input: {
       try {
         const mapped = mapTallyLedgerToOrganization(row);
 
+        await client.query(
+          `
+          INSERT INTO tally_ledgers
+          (
+            tenant_id,
+            tally_guid,
+            name,
+            parent,
+            gstin,
+            email,
+            phone,
+            state,
+            country,
+            opening_balance,
+            closing_balance,
+            synced_at
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+          ON CONFLICT (tenant_id, tally_guid)
+          DO UPDATE SET
+            name = EXCLUDED.name,
+            parent = EXCLUDED.parent,
+            gstin = EXCLUDED.gstin,
+            email = EXCLUDED.email,
+            phone = EXCLUDED.phone,
+            state = EXCLUDED.state,
+            country = EXCLUDED.country,
+            opening_balance = EXCLUDED.opening_balance,
+            closing_balance = EXCLUDED.closing_balance,
+            synced_at = NOW()
+          `,
+          [
+            input.tenantId,
+            row.guid,
+            mapped.name || row.name,
+            row.parent || null,
+            mapped.gst_number || row.gstin || row.gstNumber || null,
+            mapped.email || row.email || null,
+            row.phone || row.mobile || null,
+            mapped.registered_state || row.state || null,
+            mapped.registered_country || row.country || null,
+            toNumber(row.openingBalance ?? row.opening_balance),
+            toNumber(row.closingBalance ?? row.closing_balance),
+          ],
+        );
+
         const existingMapping = row.guid
           ? await client.query(
               `
@@ -571,6 +736,16 @@ export async function pullTallyLedgers(input: {
           tallyName: row.name,
         });
 
+        await upsertMapping(client, {
+          tenantId: input.tenantId,
+          entityType: "organization",
+          crmEntityId: organizationId,
+          tallyGuid: row.guid,
+          tallyMasterId: row.masterId,
+          tallyAlterId: row.alterId,
+          tallyName: row.name,
+        });
+
         successCount++;
       } catch (error: any) {
         failedCount++;
@@ -620,6 +795,164 @@ export async function pullTallyLedgers(input: {
       successCount,
       failedCount,
       errorMessage: error?.message || "Ledger sync failed",
+    });
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/* ----------------------------- OUTSTANDINGS ----------------------------- */
+
+export async function pullTallyOutstandings(input: {
+  tenantId: string;
+  userId?: string | null;
+  records: TallyOutstandingPayload[];
+}) {
+  const connection = await getTallyConnection(input.tenantId);
+
+  const job = await createJob({
+    tenantId: input.tenantId,
+    connectionId: connection?.id || null,
+    syncType: "outstanding",
+    direction: "pull",
+    userId: input.userId || null,
+  });
+
+  const client = await pool.connect();
+  let successCount = 0;
+  let failedCount = 0;
+
+  try {
+    await client.query("BEGIN");
+
+    for (const row of input.records || []) {
+      try {
+        const mapped = normalizeOutstandingRow(row);
+
+        if (!mapped.ledger_guid) {
+          throw new Error("ledger_guid is required for outstanding sync");
+        }
+
+        if (!mapped.ledger_name) {
+          throw new Error("ledger_name is required for outstanding sync");
+        }
+
+        if (!mapped.bill_ref) {
+          throw new Error("bill_ref is required for outstanding sync");
+        }
+
+        await client.query(
+          `
+          INSERT INTO tally_outstandings
+          (
+            tenant_id,
+            tally_guid,
+            ledger_guid,
+            ledger_name,
+            voucher_guid,
+            voucher_number,
+            voucher_type,
+            voucher_date,
+            due_date,
+            bill_ref,
+            bill_type,
+            bill_amount,
+            pending_amount,
+            synced_at
+          )
+          VALUES
+          (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()
+          )
+          ON CONFLICT (tenant_id, ledger_guid, bill_ref, voucher_number)
+          DO UPDATE SET
+            tally_guid = EXCLUDED.tally_guid,
+            ledger_name = EXCLUDED.ledger_name,
+            voucher_guid = EXCLUDED.voucher_guid,
+            voucher_type = EXCLUDED.voucher_type,
+            voucher_date = EXCLUDED.voucher_date,
+            due_date = EXCLUDED.due_date,
+            bill_type = EXCLUDED.bill_type,
+            bill_amount = EXCLUDED.bill_amount,
+            pending_amount = EXCLUDED.pending_amount,
+            synced_at = NOW()
+          `,
+          [
+            input.tenantId,
+            mapped.tally_guid,
+            mapped.ledger_guid,
+            mapped.ledger_name,
+            mapped.voucher_guid,
+            mapped.voucher_number,
+            mapped.voucher_type,
+            mapped.voucher_date,
+            mapped.due_date,
+            mapped.bill_ref,
+            mapped.bill_type,
+            mapped.bill_amount,
+            mapped.pending_amount,
+          ],
+        );
+
+        successCount++;
+      } catch (error: any) {
+        failedCount++;
+
+        await logSyncError({
+          tenantId: input.tenantId,
+          jobId: job.id,
+          entityType: "outstanding",
+          tallyGuid:
+            (row as any).ledgerGuid ||
+            (row as any).ledger_guid ||
+            (row as any).guid ||
+            null,
+          tallyName:
+            (row as any).ledgerName ||
+            (row as any).ledger_name ||
+            (row as any).partyName ||
+            null,
+          errorMessage: error?.message || "Unknown outstanding sync error",
+          rawPayload: row,
+        });
+      }
+    }
+
+    await updateConnectionSyncStatus({
+      tenantId: input.tenantId,
+      failedCount,
+      errorLabel: "outstanding records",
+    });
+
+    await finishJob({
+      jobId: job.id,
+      status:
+        failedCount === 0 ? "success" : successCount > 0 ? "partial" : "failed",
+      totalRecords: input.records.length,
+      successCount,
+      failedCount,
+    });
+
+    await client.query("COMMIT");
+
+    return {
+      job_id: job.id,
+      total: input.records.length,
+      success: successCount,
+      failed: failedCount,
+    };
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+
+    await finishJob({
+      jobId: job.id,
+      status: "failed",
+      totalRecords: input.records.length,
+      successCount,
+      failedCount,
+      errorMessage: error?.message || "Outstanding sync failed",
     });
 
     throw error;
@@ -1371,6 +1704,32 @@ export async function pullTallyLedgersHandler(
 
     res.json({
       message: "Tally ledgers synced successfully",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function pullTallyOutstandingsHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+    const userId = getUserIdFromReq(req);
+
+    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+
+    const data = await pullTallyOutstandings({
+      tenantId,
+      userId,
+      records,
+    });
+
+    res.json({
+      message: "Tally outstandings synced successfully",
       data,
     });
   } catch (error) {
