@@ -67,6 +67,36 @@ type TallyOutstandingPayload = {
   outstanding_amount?: number | string | null;
 };
 
+type TallyEmployeePayload = {
+  guid?: string | null;
+  tallyGuid?: string | null;
+  masterId?: string | number | null;
+  alterId?: string | number | null;
+
+  employeeNumber?: string | null;
+  employee_number?: string | null;
+  number?: string | null;
+
+  name?: string | null;
+  employeeName?: string | null;
+  employee_name?: string | null;
+
+  designation?: string | null;
+  department?: string | null;
+  function?: string | null;
+
+  email?: string | null;
+  phone?: string | null;
+  mobile?: string | null;
+
+  dateOfJoining?: string | null;
+  date_of_joining?: string | null;
+  joiningDate?: string | null;
+  joining_date?: string | null;
+
+  status?: string | null;
+};
+
 type TallyVoucherPayload = {
   guid?: string | null;
   masterId?: string | number | null;
@@ -203,6 +233,64 @@ function normalizeOutstandingRow(row: TallyOutstandingPayload) {
       0,
     ),
   };
+}
+
+function normalizeEmployeeRow(row: TallyEmployeePayload) {
+  const tallyGuid = cleanText(row.tallyGuid) || cleanText(row.guid);
+
+  const employeeNumber =
+    cleanText(row.employeeNumber) ||
+    cleanText(row.employee_number) ||
+    cleanText(row.number) ||
+    cleanText(row.masterId);
+
+  const name =
+    cleanText(row.name) ||
+    cleanText(row.employeeName) ||
+    cleanText(row.employee_name);
+
+  return {
+    tally_guid: tallyGuid || employeeNumber || name,
+    tally_master_id: row.masterId ? String(row.masterId) : null,
+    tally_alter_id: row.alterId ? String(row.alterId) : null,
+
+    employee_number: employeeNumber,
+    name,
+
+    designation: cleanText(row.designation),
+    department: cleanText(row.department || row.function),
+
+    email: cleanText(row.email),
+    phone: cleanText(row.phone || row.mobile),
+
+    date_of_joining:
+      normalizeDate(row.dateOfJoining) ||
+      normalizeDate(row.date_of_joining) ||
+      normalizeDate(row.joiningDate) ||
+      normalizeDate(row.joining_date),
+
+    status: cleanText(row.status) || "active",
+  };
+}
+
+function buildTallyEmployeeFallbackEmail(input: {
+  tenantId: string;
+  tallyGuid: string;
+  employeeNumber?: string | null;
+  name?: string | null;
+}) {
+  const base =
+    cleanText(input.employeeNumber) ||
+    cleanText(input.tallyGuid) ||
+    cleanText(input.name) ||
+    "employee";
+
+  const safeBase = base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+
+  return `${safeBase || "employee"}.${input.tenantId.slice(0, 8)}@tally.local`;
 }
 
 async function createJob(input: {
@@ -953,6 +1041,375 @@ export async function pullTallyOutstandings(input: {
       successCount,
       failedCount,
       errorMessage: error?.message || "Outstanding sync failed",
+    });
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/* ----------------------------- EMPLOYEES ----------------------------- */
+
+export async function getTallyEmployees(input: {
+  tenantId: string;
+  page?: number;
+  limit?: number;
+  search?: string;
+  department?: string;
+  designation?: string;
+}) {
+  const page = Math.max(Number(input.page || 1), 1);
+  const limit = Math.min(Math.max(Number(input.limit || 20), 1), 100);
+  const offset = (page - 1) * limit;
+
+  const values: any[] = [input.tenantId];
+  const where: string[] = [`u.tenant_id = $1`, `u.tally_guid IS NOT NULL`];
+
+  if (input.search) {
+    values.push(`%${input.search}%`);
+    const idx = values.length;
+
+    where.push(`
+      (
+        u.name ILIKE $${idx}
+        OR u.email ILIKE $${idx}
+        OR u.phone ILIKE $${idx}
+        OR u.employee_number ILIKE $${idx}
+        OR u.employee_code ILIKE $${idx}
+        OR u.department ILIKE $${idx}
+        OR u.designation ILIKE $${idx}
+      )
+    `);
+  }
+
+  if (input.department) {
+    values.push(input.department);
+    where.push(`u.department = $${values.length}`);
+  }
+
+  if (input.designation) {
+    values.push(input.designation);
+    where.push(`u.designation = $${values.length}`);
+  }
+
+  const whereClause = `WHERE ${where.join(" AND ")}`;
+
+  const countResult = await pool.query(
+    `
+    SELECT COUNT(*)::int AS total
+    FROM public.users u
+    ${whereClause}
+    `,
+    values,
+  );
+
+  values.push(limit);
+  const limitIdx = values.length;
+
+  values.push(offset);
+  const offsetIdx = values.length;
+
+  const result = await pool.query(
+    `
+    SELECT
+      u.id,
+      u.tenant_id,
+      u.email,
+      u.name,
+      u.role,
+      u.username,
+      u.display_name,
+      u.first_name,
+      u.last_name,
+      u.phone,
+      u.designation,
+      u.department,
+      u.employee_code,
+      u.employee_number,
+      u.is_active,
+      u.tally_guid,
+      u.tally_master_id,
+      u.tally_alter_id,
+      u.date_of_joining,
+      u.user_source,
+      u.created_at,
+      u.updated_at
+    FROM public.users u
+    ${whereClause}
+    ORDER BY u.updated_at DESC NULLS LAST, u.created_at DESC
+    LIMIT $${limitIdx}
+    OFFSET $${offsetIdx}
+    `,
+    values,
+  );
+
+  return {
+    rows: result.rows,
+    total: countResult.rows[0]?.total || 0,
+    page,
+    limit,
+  };
+}
+
+export async function pullTallyEmployees(input: {
+  tenantId: string;
+  userId?: string | null;
+  records: TallyEmployeePayload[];
+}) {
+  const connection = await getTallyConnection(input.tenantId);
+
+  const job = await createJob({
+    tenantId: input.tenantId,
+    connectionId: connection?.id || null,
+    syncType: "employee",
+    direction: "pull",
+    userId: input.userId || null,
+  });
+
+  const client = await pool.connect();
+
+  let successCount = 0;
+  let failedCount = 0;
+
+  try {
+    await client.query("BEGIN");
+
+    for (const row of input.records || []) {
+      try {
+        const mapped = normalizeEmployeeRow(row);
+
+        if (!mapped.name) {
+          throw new Error("Employee name is required");
+        }
+
+        if (!mapped.tally_guid) {
+          throw new Error("Employee tally_guid is required");
+        }
+
+        const email =
+          cleanText(mapped.email)?.toLowerCase() ||
+          buildTallyEmployeeFallbackEmail({
+            tenantId: input.tenantId,
+            tallyGuid: mapped.tally_guid,
+            employeeNumber: mapped.employee_number,
+            name: mapped.name,
+          });
+
+        const displayName = mapped.name;
+        const firstName =
+          mapped.name.split(" ").filter(Boolean)[0] || mapped.name;
+        const employeeCode =
+          mapped.employee_number || mapped.tally_master_id || null;
+
+        /**
+         * Important:
+         * Users table has unique constraints on email and tally_guid.
+         * So we do not rely only on ON CONFLICT(tally_guid).
+         *
+         * Priority:
+         * 1. Existing user by tally_guid
+         * 2. Existing user by email
+         * 3. Insert new user
+         */
+        const existingByTally = await client.query(
+          `
+          SELECT id
+          FROM public.users
+          WHERE tenant_id = $1
+            AND tally_guid = $2
+          LIMIT 1
+          FOR UPDATE
+          `,
+          [input.tenantId, mapped.tally_guid],
+        );
+
+        const existingByEmail =
+          existingByTally.rowCount > 0
+            ? { rowCount: 0, rows: [] as any[] }
+            : await client.query(
+                `
+                SELECT id
+                FROM public.users
+                WHERE tenant_id = $1
+                  AND lower(email) = lower($2)
+                LIMIT 1
+                FOR UPDATE
+                `,
+                [input.tenantId, email],
+              );
+
+        const existingUserId =
+          existingByTally.rows[0]?.id || existingByEmail.rows[0]?.id || null;
+
+        if (existingUserId) {
+          await client.query(
+            `
+            UPDATE public.users
+            SET
+              email = $3,
+              name = $4,
+              role = COALESCE(NULLIF(role, ''), 'employee'),
+              display_name = $5,
+              first_name = COALESCE(first_name, $6),
+              phone = $7,
+              designation = $8,
+              department = $9,
+              employee_code = $10,
+              employee_number = $11,
+              tally_guid = $12,
+              tally_master_id = $13,
+              tally_alter_id = $14,
+              date_of_joining = $15,
+              user_source = 'tally',
+              is_active = true,
+              updated_at = NOW(),
+              updated_by = $16
+            WHERE tenant_id = $1
+              AND id = $2
+            `,
+            [
+              input.tenantId,
+              existingUserId,
+              email,
+              mapped.name,
+              displayName,
+              firstName,
+              mapped.phone,
+              mapped.designation,
+              mapped.department,
+              employeeCode,
+              mapped.employee_number,
+              mapped.tally_guid,
+              mapped.tally_master_id,
+              mapped.tally_alter_id,
+              mapped.date_of_joining,
+              input.userId || null,
+            ],
+          );
+        } else {
+          await client.query(
+            `
+            INSERT INTO public.users
+            (
+              tenant_id,
+              email,
+              name,
+              role,
+              username,
+              display_name,
+              first_name,
+              phone,
+              designation,
+              department,
+              employee_code,
+              employee_number,
+              is_active,
+              tally_guid,
+              tally_master_id,
+              tally_alter_id,
+              date_of_joining,
+              user_source,
+              created_by,
+              updated_by,
+              created_at,
+              updated_at
+            )
+            VALUES
+            (
+              $1,
+              $2,
+              $3,
+              'employee',
+              NULL,
+              $4,
+              $5,
+              $6,
+              $7,
+              $8,
+              $9,
+              $10,
+              true,
+              $11,
+              $12,
+              $13,
+              $14,
+              'tally',
+              $15,
+              $15,
+              NOW(),
+              NOW()
+            )
+            `,
+            [
+              input.tenantId,
+              email,
+              mapped.name,
+              displayName,
+              firstName,
+              mapped.phone,
+              mapped.designation,
+              mapped.department,
+              employeeCode,
+              mapped.employee_number,
+              mapped.tally_guid,
+              mapped.tally_master_id,
+              mapped.tally_alter_id,
+              mapped.date_of_joining,
+              input.userId || null,
+            ],
+          );
+        }
+
+        successCount++;
+      } catch (error: any) {
+        failedCount++;
+
+        await logSyncError({
+          tenantId: input.tenantId,
+          jobId: job.id,
+          entityType: "employee",
+          tallyGuid: row.guid || row.tallyGuid || null,
+          tallyName: row.name || row.employeeName || row.employee_name || null,
+          errorMessage: error?.message || "Unknown employee sync error",
+          rawPayload: row,
+        });
+      }
+    }
+
+    await updateConnectionSyncStatus({
+      tenantId: input.tenantId,
+      failedCount,
+      errorLabel: "employee records",
+    });
+
+    await finishJob({
+      jobId: job.id,
+      status:
+        failedCount === 0 ? "success" : successCount > 0 ? "partial" : "failed",
+      totalRecords: input.records.length,
+      successCount,
+      failedCount,
+    });
+
+    await client.query("COMMIT");
+
+    return {
+      job_id: job.id,
+      total: input.records.length,
+      success: successCount,
+      failed: failedCount,
+    };
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+
+    await finishJob({
+      jobId: job.id,
+      status: "failed",
+      totalRecords: input.records.length,
+      successCount,
+      failedCount,
+      errorMessage: error?.message || "Employee sync failed",
     });
 
     throw error;
@@ -1730,6 +2187,59 @@ export async function pullTallyOutstandingsHandler(
 
     res.json({
       message: "Tally outstandings synced successfully",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getTallyEmployeesHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+
+    const data = await getTallyEmployees({
+      tenantId,
+      page: req.query.page ? Number(req.query.page) : 1,
+      limit: req.query.limit ? Number(req.query.limit) : 20,
+      search: req.query.search ? String(req.query.search) : undefined,
+      department: req.query.department
+        ? String(req.query.department)
+        : undefined,
+      designation: req.query.designation
+        ? String(req.query.designation)
+        : undefined,
+    });
+
+    res.json({ data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function pullTallyEmployeesHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+    const userId = getUserIdFromReq(req);
+
+    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+
+    const data = await pullTallyEmployees({
+      tenantId,
+      userId,
+      records,
+    });
+
+    res.json({
+      message: "Tally employees synced successfully",
       data,
     });
   } catch (error) {

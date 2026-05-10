@@ -1,8 +1,10 @@
 import { Router } from "express";
 import {
   getTallyConnectionHandler,
+  getTallyEmployeesHandler,
   getTallySyncErrorsHandler,
   getTallySyncHistoryHandler,
+  pullTallyEmployeesHandler,
   pullTallyLedgersHandler,
   pullTallyOutstandingsHandler,
   pullTallyPurchaseOrdersHandler,
@@ -25,5 +27,7 @@ tallyRouter.post("/pull/sales-orders", pullTallySalesOrdersHandler);
 
 tallyRouter.get("/sync-history", getTallySyncHistoryHandler);
 tallyRouter.get("/sync-errors", getTallySyncErrorsHandler);
+tallyRouter.get("/employees", getTallyEmployeesHandler);
+tallyRouter.post("/pull/employees", pullTallyEmployeesHandler);
 
 export default tallyRouter;
