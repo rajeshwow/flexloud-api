@@ -35,6 +35,7 @@ import tallyRouter from "./modules/tally/tally.routes";
 import tasksRouter from "./modules/tasks/tasks.routes";
 import usersRouter from "./modules/users/users.routes";
 import visitsRouter from "./modules/visits/visits.routes";
+import warehouseRouter from "./modules/warehouse/warehouse.routes";
 import { errorHandler, notFoundHandler } from "./observability/errors";
 import { clientLogsRouter } from "./routes/clientLogs";
 import { meRouter } from "./routes/me";
@@ -116,6 +117,7 @@ export function createApp() {
   app.use("/v1/:slug/sales-orders", salesOrdersRouter);
   app.use("/v1/:slug/delivery-challans", deliveryChallansRouter);
   app.use("/v1/:slug/tally-performance", tallyPerformanceRouter);
+  app.use("/v1/:slug/warehouse", warehouseRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
