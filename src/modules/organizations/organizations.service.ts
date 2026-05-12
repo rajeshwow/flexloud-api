@@ -514,7 +514,10 @@ export const organizationsService = {
         u.name AS assigned_to_name,
 
         COALESCE(b.branch_count, 0) AS branch_count,
-        b.head_office_name
+        b.head_office_name,
+        b.head_office,
+
+COALESCE(b.branches, '[]'::jsonb) AS branches
       FROM organizations o
       LEFT JOIN users u
         ON u.id = o.assigned_to
@@ -538,15 +541,151 @@ export const organizationsService = {
         ON reg_city.id = o.registered_city_id
         AND reg_city.deleted_at IS NULL
 
-      LEFT JOIN (
-        SELECT
-          ob.organization_id,
-          COUNT(*)::int AS branch_count,
-          MAX(CASE WHEN ob.is_head_office = true THEN ob.name END) AS head_office_name
-        FROM organization_branches ob
-        WHERE ob.tenant_id = $1
-        GROUP BY ob.organization_id
-      ) b ON b.organization_id = o.id
+      LEFT JOIN LATERAL (
+  SELECT
+    COUNT(*)::int AS branch_count,
+
+    MAX(CASE WHEN ob.is_head_office = true THEN ob.name END) AS head_office_name,
+
+    jsonb_agg(
+      jsonb_build_object(
+        'id', ob.id,
+        'tenant_id', ob.tenant_id,
+        'organization_id', ob.organization_id,
+        'name', ob.name,
+        'code', ob.code,
+        'is_head_office', ob.is_head_office,
+        'contact_person', ob.contact_person,
+        'phone', ob.phone,
+        'email', ob.email,
+        'gst_number', ob.gst_number,
+        'assigned_to', ob.assigned_to,
+
+        'billing_street', ob.billing_street,
+        'billing_area', ob.billing_area,
+        'billing_postal_code', ob.billing_postal_code,
+        'billing_city_id', ob.billing_city_id,
+        'billing_city', billing_city.label,
+        'billing_city_name', billing_city.label,
+        'billing_state_id', ob.billing_state_id,
+        'billing_state', billing_state.label,
+        'billing_state_name', billing_state.label,
+        'billing_country_id', ob.billing_country_id,
+        'billing_country', billing_country.label,
+        'billing_country_name', billing_country.label,
+
+        'shipping_street', ob.shipping_street,
+        'shipping_area', ob.shipping_area,
+        'shipping_postal_code', ob.shipping_postal_code,
+        'shipping_city_id', ob.shipping_city_id,
+        'shipping_city', shipping_city.label,
+        'shipping_city_name', shipping_city.label,
+        'shipping_state_id', ob.shipping_state_id,
+        'shipping_state', shipping_state.label,
+        'shipping_state_name', shipping_state.label,
+        'shipping_country_id', ob.shipping_country_id,
+        'shipping_country', shipping_country.label,
+        'shipping_country_name', shipping_country.label,
+
+        'is_shipping_same_as_billing', ob.is_shipping_same_as_billing,
+        'status', ob.status
+      )
+      ORDER BY ob.is_head_office DESC, ob.created_at ASC
+    ) AS branches,
+
+    (
+      SELECT jsonb_build_object(
+        'id', hob.id,
+        'tenant_id', hob.tenant_id,
+        'organization_id', hob.organization_id,
+        'name', hob.name,
+        'code', hob.code,
+        'is_head_office', hob.is_head_office,
+        'contact_person', hob.contact_person,
+        'phone', hob.phone,
+        'email', hob.email,
+        'gst_number', hob.gst_number,
+        'assigned_to', hob.assigned_to,
+
+        'billing_street', hob.billing_street,
+        'billing_area', hob.billing_area,
+        'billing_postal_code', hob.billing_postal_code,
+        'billing_city_id', hob.billing_city_id,
+        'billing_city', h_billing_city.label,
+        'billing_city_name', h_billing_city.label,
+        'billing_state_id', hob.billing_state_id,
+        'billing_state', h_billing_state.label,
+        'billing_state_name', h_billing_state.label,
+        'billing_country_id', hob.billing_country_id,
+        'billing_country', h_billing_country.label,
+        'billing_country_name', h_billing_country.label,
+
+        'shipping_street', hob.shipping_street,
+        'shipping_area', hob.shipping_area,
+        'shipping_postal_code', hob.shipping_postal_code,
+        'shipping_city_id', hob.shipping_city_id,
+        'shipping_city', h_shipping_city.label,
+        'shipping_city_name', h_shipping_city.label,
+        'shipping_state_id', hob.shipping_state_id,
+        'shipping_state', h_shipping_state.label,
+        'shipping_state_name', h_shipping_state.label,
+        'shipping_country_id', hob.shipping_country_id,
+        'shipping_country', h_shipping_country.label,
+        'shipping_country_name', h_shipping_country.label,
+
+        'is_shipping_same_as_billing', hob.is_shipping_same_as_billing,
+        'status', hob.status
+      )
+      FROM organization_branches hob
+      LEFT JOIN master_values h_billing_city
+        ON h_billing_city.id = hob.billing_city_id
+        AND h_billing_city.deleted_at IS NULL
+      LEFT JOIN master_values h_billing_state
+        ON h_billing_state.id = hob.billing_state_id
+        AND h_billing_state.deleted_at IS NULL
+      LEFT JOIN master_values h_billing_country
+        ON h_billing_country.id = hob.billing_country_id
+        AND h_billing_country.deleted_at IS NULL
+      LEFT JOIN master_values h_shipping_city
+        ON h_shipping_city.id = hob.shipping_city_id
+        AND h_shipping_city.deleted_at IS NULL
+      LEFT JOIN master_values h_shipping_state
+        ON h_shipping_state.id = hob.shipping_state_id
+        AND h_shipping_state.deleted_at IS NULL
+      LEFT JOIN master_values h_shipping_country
+        ON h_shipping_country.id = hob.shipping_country_id
+        AND h_shipping_country.deleted_at IS NULL
+      WHERE hob.tenant_id = o.tenant_id
+        AND hob.organization_id = o.id
+      ORDER BY hob.is_head_office DESC, hob.created_at ASC
+      LIMIT 1
+    ) AS head_office
+
+  FROM organization_branches ob
+
+  LEFT JOIN master_values billing_city
+    ON billing_city.id = ob.billing_city_id
+    AND billing_city.deleted_at IS NULL
+  LEFT JOIN master_values billing_state
+    ON billing_state.id = ob.billing_state_id
+    AND billing_state.deleted_at IS NULL
+  LEFT JOIN master_values billing_country
+    ON billing_country.id = ob.billing_country_id
+    AND billing_country.deleted_at IS NULL
+
+  LEFT JOIN master_values shipping_city
+    ON shipping_city.id = ob.shipping_city_id
+    AND shipping_city.deleted_at IS NULL
+  LEFT JOIN master_values shipping_state
+    ON shipping_state.id = ob.shipping_state_id
+    AND shipping_state.deleted_at IS NULL
+  LEFT JOIN master_values shipping_country
+    ON shipping_country.id = ob.shipping_country_id
+    AND shipping_country.deleted_at IS NULL
+
+  WHERE ob.tenant_id = o.tenant_id
+    AND ob.organization_id = o.id
+) b ON true
 
       WHERE ${whereClause}
       ORDER BY o.created_at DESC
@@ -631,22 +770,23 @@ export const organizationsService = {
       `;
 
       await client.query(updateOrgQuery, [
-        input.tenantId,
-        input.organizationId,
-        input.name,
-        normalizeNullableString(input.gst_number),
-        normalizeNullableString(input.email),
-        input.next_followup_at || null,
-        normalizeNullableString(input.type),
-        normalizeNullableString(input.industry),
-        input.assigned_to || null,
-        normalizeNullableString(input.registered_address?.street),
-        normalizeNullableString(input.registered_address?.area),
-        normalizeNullableString(input.registered_address?.postal_code),
-        input.registered_address?.city_id || null,
-        input.registered_address?.state_id || null,
-        input.registered_address?.country_id || null,
-        input.updatedBy,
+        input.tenantId, // $1
+        input.organizationId, // $2
+        input.name, // $3
+        normalizeNullableString(input.gst_number), // $4
+        normalizeNullableString(input.email), // $5
+        input.next_followup_at || null, // $6
+        normalizeNullableString(input.type), // $7
+        normalizeNullableString(input.industry), // $8
+        input.assigned_to || null, // $9
+        normalizeNullableString(input.registered_address?.street), // $10
+        normalizeNullableString(input.registered_address?.area), // $11
+        normalizeNullableString(input.registered_address?.postal_code), // $12
+        input.registered_address?.city_id || null, // $13
+        input.registered_address?.state_id || null, // $14
+        input.registered_address?.country_id || null, // $15
+        input.updatedBy, // $16
+        input.source || "system", // $17
       ]);
 
       await client.query(

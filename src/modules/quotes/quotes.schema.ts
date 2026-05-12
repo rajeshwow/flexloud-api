@@ -15,6 +15,7 @@ export const CreateQuoteSchema = z.object({
     quotation_date: z.string(),
     valid_until: z.string(),
     validation_period: z.number().optional(),
+    organization_branch_id: z.string().uuid().optional().nullable(),
 
     quote_stage: z.string().optional(),
 

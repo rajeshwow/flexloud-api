@@ -1,5 +1,8 @@
 import { Router } from "express";
-import { sendQuoteEmailHandler } from "./quoteEmail.service";
+import {
+  previewQuotePdfHandler,
+  sendQuoteEmailHandler,
+} from "./quoteEmail.service";
 import {
   createQuoteHandler,
   getQuoteByIdHandler,
@@ -11,6 +14,8 @@ const quotesRouter = Router();
 
 quotesRouter.post("/", createQuoteHandler);
 quotesRouter.get("/", getQuotesHandler);
+// add this before get("/:id")
+quotesRouter.get("/:id/pdf", previewQuotePdfHandler);
 quotesRouter.get("/:id", getQuoteByIdHandler);
 quotesRouter.patch("/:id", updateQuoteHandler);
 quotesRouter.post("/:id/email", sendQuoteEmailHandler);

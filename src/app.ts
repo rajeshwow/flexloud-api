@@ -48,15 +48,30 @@ export function createApp() {
   app.use(helmet());
   app.use(express.json({ limit: "1mb" }));
 
+  const allowedOrigins = env.CORS_ORIGINS;
+
   app.use(
     cors({
       origin: (origin, cb) => {
+        // allow Postman/curl/server-to-server
         if (!origin) return cb(null, true);
 
-        const allowed = env.CORS_ORIGINS.includes(origin);
-        return cb(allowed ? null : new Error("CORS blocked"), allowed);
+        // allow all localhost in development
+        if (
+          env.NODE_ENV !== "production" &&
+          /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)
+        ) {
+          return cb(null, true);
+        }
+
+        if (allowedOrigins.includes(origin)) {
+          return cb(null, true);
+        }
+
+        console.log("CORS blocked origin:", origin);
+        return cb(new Error(`CORS blocked: ${origin}`));
       },
-      credentials: false,
+      credentials: true,
     }),
   );
 

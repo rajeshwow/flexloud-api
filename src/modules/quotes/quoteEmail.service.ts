@@ -409,6 +409,49 @@ function buildQuotePdfHtml(quote: any) {
 `;
 }
 
+export async function previewQuotePdfHandler(
+  req: UserContextRequest,
+  res: Response,
+) {
+  const tenantId = getTenantId(req);
+  const { id } = req.params;
+
+  if (!tenantId) {
+    return res.status(401).json({ message: "Unauthorized: tenant missing" });
+  }
+
+  if (!id) {
+    return res.status(400).json({ message: "Quote id is required" });
+  }
+
+  try {
+    const quote = await getQuoteFullDetails(tenantId, id);
+
+    if (!quote) {
+      return res.status(404).json({ message: "Quote not found" });
+    }
+
+    const quoteNo =
+      quote.quote_number ||
+      quote.quote_no ||
+      quote.quote_display_id ||
+      quote.id;
+
+    const pdfBuffer = await generateQuotePdfBuffer(quote);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${quoteNo}.pdf"`);
+
+    return res.send(pdfBuffer);
+  } catch (error: any) {
+    console.error("previewQuotePdfHandler error:", error);
+
+    return res.status(500).json({
+      message: error?.message || "Failed to preview quote PDF",
+    });
+  }
+}
+
 async function generateQuotePdfBuffer(quote: any) {
   const browser = await puppeteer.launch({
     headless: true,
