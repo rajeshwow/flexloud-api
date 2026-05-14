@@ -635,49 +635,54 @@ export async function pullTallyLedgers(input: {
 
         await client.query(
           `
-          INSERT INTO tally_ledgers
-          (
-            tenant_id,
-            tally_guid,
-            name,
-            parent,
-            gstin,
-            email,
-            phone,
-            state,
-            country,
-            opening_balance,
-            closing_balance,
-            synced_at
-          )
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
-          ON CONFLICT (tenant_id, tally_guid)
-          DO UPDATE SET
-            name = EXCLUDED.name,
-            parent = EXCLUDED.parent,
-            gstin = EXCLUDED.gstin,
-            email = EXCLUDED.email,
-            phone = EXCLUDED.phone,
-            state = EXCLUDED.state,
-            country = EXCLUDED.country,
-            opening_balance = EXCLUDED.opening_balance,
-            closing_balance = EXCLUDED.closing_balance,
-            synced_at = NOW()
-          `,
+  INSERT INTO tally_ledgers
+  (
+    tenant_id,
+    tally_guid,
+    name,
+    parent,
+    gstin,
+    email,
+    phone,
+    state,
+    country,
+    opening_balance,
+    closing_balance,
+    synced_at
+  )
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+  ON CONFLICT (tenant_id, tally_guid)
+  DO UPDATE SET
+    name = EXCLUDED.name,
+    parent = EXCLUDED.parent,
+    gstin = EXCLUDED.gstin,
+    email = EXCLUDED.email,
+    phone = EXCLUDED.phone,
+    state = EXCLUDED.state,
+    country = EXCLUDED.country,
+    opening_balance = EXCLUDED.opening_balance,
+    closing_balance = EXCLUDED.closing_balance,
+    synced_at = NOW()
+  `,
           [
             input.tenantId,
             row.guid,
-            mapped.name || row.name,
+            row.name,
             row.parent || null,
-            mapped.gst_number || row.gstin || row.gstNumber || null,
-            mapped.email || row.email || null,
+            row.gstin || row.gstNumber || null,
+            row.email || null,
             row.phone || row.mobile || null,
-            mapped.registered_state || row.state || null,
-            mapped.registered_country || row.country || null,
+            row.state || null,
+            row.country || null,
             toNumber(row.openingBalance ?? row.opening_balance),
             toNumber(row.closingBalance ?? row.closing_balance),
           ],
         );
+
+        if (!mapped) {
+          successCount++;
+          continue;
+        }
 
         const existingMapping = row.guid
           ? await client.query(
@@ -1582,45 +1587,48 @@ export async function pullTallyStockItems(input: {
           } else {
             const productResult = await client.query(
               `
-              INSERT INTO products
-              (
-                tenant_id,
-                name,
-                part_number,
-                unit_uqc,
-                category,
-                description,
-                status,
-                cost_price_currency,
-                cost_price,
-                msp_currency,
-                msp,
-                selling_price_currency,
-                selling_price,
-                tax,
-                opening_stock,
-                opening_stock_value,
-                stock_on_hand,
-                committed_stock,
-                available_for_sale,
-                qty_to_be_invoiced_shipped,
-                qty_to_be_received_billed,
-                created_by,
-                updated_by,
-                created_at,
-                updated_at
-              )
-              VALUES (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                $21,$22,$22,NOW(),NOW()
-              )
-              RETURNING id
-              `,
+  INSERT INTO products
+  (
+    tenant_id,
+    name,
+    part_number,
+    hsn_code,
+    unit_uqc,
+    category,
+    description,
+    status,
+    cost_price_currency,
+    cost_price,
+    msp_currency,
+    msp,
+    selling_price_currency,
+    selling_price,
+    tax,
+    opening_stock,
+    opening_stock_value,
+    stock_on_hand,
+    committed_stock,
+    available_for_sale,
+    qty_to_be_invoiced_shipped,
+    qty_to_be_received_billed,
+    source,
+    created_by,
+    updated_by,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+    $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+    $21,$22,'tally',$23,$23,NOW(),NOW()
+  )
+  RETURNING id
+  `,
               [
                 input.tenantId,
                 mapped.name,
                 mapped.part_number,
+                mapped.hsn_code,
                 mapped.unit_uqc,
                 mapped.category,
                 mapped.description,

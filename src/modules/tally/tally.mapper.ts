@@ -8,11 +8,28 @@ function toNumber(value?: string) {
 }
 
 export function mapTallyLedgerToOrganization(row: TallyLedgerPayload) {
+  const parent = String(row.parent || "").toLowerCase();
+
+  let type: "customer" | "vendor" | null = null;
+
+  if (parent.includes("sundry debtors")) {
+    type = "customer";
+  }
+
+  if (parent.includes("sundry creditors")) {
+    type = "vendor";
+  }
+
+  // Important: non-party ledgers should not become organizations
+  if (!type) {
+    return null;
+  }
+
   return {
     name: row.name,
     gst_number: row.gstin || null,
     email: row.email || null,
-    type: "customer",
+    type,
     industry: null,
     registered_street: row.address || null,
     registered_area: null,
@@ -31,19 +48,28 @@ export function mapTallyStockItemToProduct(row: TallyStockItemPayload) {
   return {
     name: row.name,
     part_number: row.masterId || row.guid || row.name,
-    hsn_code: null,
+
+    // products.hsn_code is NOT NULL, so never pass null
+    hsn_code: (row as any).hsnCode || "NA",
+
     unit_uqc: row.baseUnit || null,
     category: row.parent || null,
     manufacturer: null,
     description: row.parent ? `Tally Group: ${row.parent}` : null,
+
     status: "active",
+
     cost_price_currency: "INR",
     cost_price: openingRate || 0,
+
     msp_currency: "INR",
     msp: openingRate || 0,
+
     selling_price_currency: "INR",
     selling_price: openingRate || 0,
-    tax: 0,
+
+    tax: "0",
+
     opening_stock: openingStock,
     opening_stock_value: openingValue,
     stock_on_hand: openingStock,

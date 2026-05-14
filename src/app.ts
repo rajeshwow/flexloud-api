@@ -81,6 +81,7 @@ export function createApp() {
    */
   app.use("/v1/admin", tanentRouter);
   app.use("/v1/:slug/auth", resolveTenant, authRouter);
+  app.use("/v1/:slug/tally", resolveTenant, tallyRouter);
 
   /**
    * Protected tenant routes
@@ -112,7 +113,7 @@ export function createApp() {
   app.use("/v1/:slug/geo-visits", geoVisitsRouter);
   app.use("/v1/:slug/dashboard", dashboardRouter);
   app.use("/v1/:slug/my-day", myDayRouter);
-  app.use("/v1/:slug/tally", tallyRouter);
+  // app.use("/v1/:slug/tally", tallyRouter);
   app.use("/v1/:slug/purchase-orders", purchaseOrderRouter);
   app.use("/v1/:slug/sales-orders", salesOrdersRouter);
   app.use("/v1/:slug/delivery-challans", deliveryChallansRouter);
