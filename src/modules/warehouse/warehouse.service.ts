@@ -1002,11 +1002,17 @@ export async function createSoDispatchHandler(req: Request, res: Response) {
     res.status(201).json({
       message: "Sales order dispatched successfully",
       data: dispatch,
+      success: true,
+      statusCode: 201,
     });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("createSoDispatchHandler error", error);
-    res.status(500).json({ message: "Failed to dispatch sales order" });
+    res.status(500).json({
+      message: "Failed to dispatch sales order",
+      success: false,
+      statusCode: 500,
+    });
   } finally {
     client.release();
   }

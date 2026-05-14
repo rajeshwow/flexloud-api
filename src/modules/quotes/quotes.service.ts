@@ -659,7 +659,7 @@ export async function getQuotesHandler(
         au.email AS assigned_to_email,
 
         o.name AS organization_name,
-
+        MAX(so.id::text) AS sales_order_id,
         c.first_name AS contact_first_name,
         c.last_name AS contact_last_name,
         CONCAT_WS(' ', c.first_name, c.last_name) AS contact_name,
@@ -679,6 +679,9 @@ export async function getQuotesHandler(
       LEFT JOIN opportunities op
         ON op.id = q.opportunity_id
         AND op.tenant_id = q.tenant_id
+      LEFT JOIN sales_orders so
+        ON so.quote_id = q.id
+        AND so.tenant_id = q.tenant_id
       LEFT JOIN quote_line_items qi
         ON qi.quote_id = q.id
         AND qi.tenant_id = q.tenant_id

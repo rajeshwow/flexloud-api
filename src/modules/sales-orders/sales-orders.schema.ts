@@ -20,6 +20,7 @@ const SalesOrderItemSchema = z.object({
 export const CreateSalesOrderSchema = z.object({
   so_date: z.string().optional(),
   expected_delivery_date: z.string().optional().nullable(),
+  quote_id: z.string().uuid().nullable().optional(),
 
   customer_id: z.string().uuid("Customer is required"),
   contact_id: z.string().uuid().optional().nullable(),
@@ -43,6 +44,7 @@ export const CreateSalesOrderSchema = z.object({
 
 export const UpdateSalesOrderSchema = CreateSalesOrderSchema.partial().extend({
   items: z.array(SalesOrderItemSchema).optional(),
+  quote_id: z.string().uuid().nullable().optional(),
 });
 
 export const SalesOrderListQuerySchema = z.object({

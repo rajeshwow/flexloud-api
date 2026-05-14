@@ -137,6 +137,7 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
         so.*,
         so.voucher_number AS so_number,
         so.voucher_date AS so_date,
+        so.quote_id,
         so.total_amount AS grand_total,
         so.raw_tally_data->>'expected_delivery_date' AS expected_delivery_date,
         COALESCE(o.name, so.customer_name) AS customer_name,
@@ -144,6 +145,7 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
         COUNT(*) OVER()::int AS total_count
       FROM sales_orders so
       LEFT JOIN organizations o ON o.id = so.organization_id AND o.tenant_id = so.tenant_id
+      LEFT JOIN quotes q ON q.id = so.quote_id AND q.tenant_id = so.tenant_id
       LEFT JOIN users u ON u.id = so.assigned_to
       ${where}
       ORDER BY so.created_at DESC
@@ -259,23 +261,24 @@ export const createSalesOrderHandler = async (req: Request, res: Response) => {
     const orderResult = await client.query(
       `
       INSERT INTO sales_orders (
-        tenant_id,
-        voucher_number,
-        voucher_date,
-        customer_name,
-        customer_gst,
-        reference_number,
-        total_amount,
-        status,
-        raw_tally_data,
-        customer_id,
-        organization_id,
-        contact_id,
-        assigned_to
-      )
-      VALUES (
-        $1,$2,COALESCE($3::date, CURRENT_DATE),$4,$5,$6,$7,$8,$9,$10,$10,$11,$12
-      )
+  tenant_id,
+  voucher_number,
+  voucher_date,
+  customer_name,
+  customer_gst,
+  reference_number,
+  total_amount,
+  status,
+  raw_tally_data,
+  customer_id,
+  organization_id,
+  contact_id,
+  assigned_to,
+  quote_id
+)
+VALUES (
+  $1,$2,COALESCE($3::date, CURRENT_DATE),$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13
+)
       RETURNING
         *,
         voucher_number AS so_number,
@@ -306,6 +309,7 @@ export const createSalesOrderHandler = async (req: Request, res: Response) => {
         payload.customer_id,
         payload.contact_id || null,
         payload.assigned_to || null,
+        payload.quote_id || null,
       ],
     );
 
