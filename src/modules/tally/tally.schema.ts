@@ -95,3 +95,47 @@ export const PullPurchaseOrdersSchema =
   OptionalRecordsSchema(TallyVoucherSchema);
 
 export const PullSalesOrdersSchema = OptionalRecordsSchema(TallyVoucherSchema);
+
+const TallyOutstandingRecordSchema = z.object({
+  guid: z.string().nullable().optional(),
+
+  ledgerGuid: z.string().nullable().optional(),
+  ledgerName: z.string().trim().nullable().optional(),
+
+  ledger_guid: z.string().nullable().optional(),
+  ledger_name: z.string().trim().nullable().optional(),
+
+  billRef: z.string().trim().nullable().optional(),
+  bill_ref: z.string().trim().nullable().optional(),
+
+  voucherNo: z.string().nullable().optional(),
+  voucher_no: z.string().nullable().optional(),
+
+  voucherType: z.string().nullable().optional(),
+  voucher_type: z.string().nullable().optional(),
+
+  voucherDate: z.string().nullable().optional(),
+  voucher_date: z.string().nullable().optional(),
+
+  dueDate: z.string().nullable().optional(),
+  due_date: z.string().nullable().optional(),
+
+  openingAmount: OptionalNumberLikeSchema,
+  opening_amount: OptionalNumberLikeSchema,
+
+  pendingAmount: OptionalNumberLikeSchema,
+  pending_amount: OptionalNumberLikeSchema,
+
+  overdueDays: OptionalNumberLikeSchema,
+  overdue_days: OptionalNumberLikeSchema,
+
+  drCr: z.string().nullable().optional(),
+  dr_cr: z.string().nullable().optional(),
+
+  partyType: z.string().nullable().optional(),
+  party_type: z.string().nullable().optional(),
+});
+
+export const PullOutstandingsSchema = OptionalRecordsSchema(
+  TallyOutstandingRecordSchema,
+);

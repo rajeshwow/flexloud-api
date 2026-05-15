@@ -37,7 +37,7 @@ export const CreateProductSchema = z.object({
 export const GetProductsSchema = z.object({
   query: z.object({
     page: z.coerce.number().int().min(1).optional().default(1),
-    limit: z.coerce.number().int().min(1).max(100).optional().default(10),
+    limit: z.coerce.number().int().min(1).max(10000).optional().default(10),
     search: z.string().trim().optional(),
     status: z.string().trim().optional(),
     category: z.string().trim().optional(),

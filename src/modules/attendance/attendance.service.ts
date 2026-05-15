@@ -48,7 +48,7 @@ async function autoCloseStaleOpenSessions(
   );
 
   for (const session of staleSessionsResult.rows) {
-    console.log("stale session attendance_date =>", session.attendance_date);
+    // console.log("stale session attendance_date =>", session.attendance_date);
 
     const forcedClockOutAt = getEndOfAttendanceDate(session.attendance_date);
 
@@ -146,7 +146,7 @@ export async function getMyTodayAttendanceHandler(
   try {
     const tenantId = getTenantId(req);
     const userId = req.user?.sub;
-    console.log("my today attendance", userId);
+    // console.log("my today attendance", userId);
 
     const today = getTodayDateString();
 

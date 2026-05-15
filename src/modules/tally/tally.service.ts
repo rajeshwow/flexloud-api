@@ -179,6 +179,20 @@ function normalizeBillType(value: any) {
   return "receivable";
 }
 
+function normalizeDateOrNull(value?: string | null) {
+  if (!value) return null;
+
+  const text = String(value).trim();
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+  if (/^\d{8}$/.test(text)) {
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  }
+
+  return null;
+}
+
 function normalizeOutstandingRow(row: TallyOutstandingPayload) {
   const ledgerGuid =
     cleanText(row.ledgerGuid) ||
@@ -213,10 +227,13 @@ function normalizeOutstandingRow(row: TallyOutstandingPayload) {
 
     voucher_type: cleanText(row.voucherType) || cleanText(row.voucher_type),
 
-    voucher_date:
-      normalizeDate(row.voucherDate) || normalizeDate(row.voucher_date),
+    // voucher_date:
+    //   normalizeDate(row.voucherDate) || normalizeDate(row.voucher_date),
 
-    due_date: normalizeDate(row.dueDate) || normalizeDate(row.due_date),
+    // due_date: normalizeDate(row.dueDate) || normalizeDate(row.due_date),
+
+    voucher_date: normalizeDateOrNull(row.voucherDate || row.voucher_date),
+    due_date: normalizeDateOrNull(row.dueDate || row.due_date),
 
     bill_ref: billRef,
 
@@ -924,9 +941,9 @@ export async function pullTallyOutstandings(input: {
       try {
         const mapped = normalizeOutstandingRow(row);
 
-        if (!mapped.ledger_guid) {
-          throw new Error("ledger_guid is required for outstanding sync");
-        }
+        // if (!mapped.ledger_guid) {
+        //   throw new Error("ledger_guid is required for outstanding sync");
+        // }
 
         if (!mapped.ledger_name) {
           throw new Error("ledger_name is required for outstanding sync");
@@ -1432,13 +1449,6 @@ export async function pullTallyStockItems(input: {
 }) {
   const connection = await getTallyConnection(input.tenantId);
 
-  console.log("[TALLY STOCK SERVICE START]", {
-    tenantId: input.tenantId,
-    userId: input.userId || null,
-    recordsCount: input.records?.length || 0,
-    firstRecord: input.records?.[0] || null,
-  });
-
   const job = await createJob({
     tenantId: input.tenantId,
     connectionId: connection?.id || null,
@@ -1457,12 +1467,6 @@ export async function pullTallyStockItems(input: {
     for (const row of input.records) {
       try {
         const mapped = mapTallyStockItemToProduct(row);
-        console.log("[TALLY STOCK MAPPED PRODUCT]", {
-          rawName: row.name,
-          rawGuid: row.guid,
-          rawMasterId: row.masterId,
-          mapped,
-        });
 
         const existingMapping = row.guid
           ? await client.query(
@@ -1477,12 +1481,6 @@ export async function pullTallyStockItems(input: {
               [input.tenantId, row.guid],
             )
           : { rowCount: 0, rows: [] as any[] };
-
-        console.log("[TALLY STOCK EXISTING MAPPING]", {
-          tallyGuid: row.guid,
-          rowCount: existingMapping.rowCount,
-          crmEntityId: existingMapping.rows?.[0]?.crm_entity_id || null,
-        });
 
         let productId: string;
 
@@ -1716,16 +1714,6 @@ export async function pullTallyStockItems(input: {
           tallyName: row.name || null,
           errorMessage: error?.message || "Unknown stock item sync error",
           rawPayload: row,
-        });
-
-        console.log("[TALLY STOCK ROW FAILED]", {
-          row,
-          errorMessage: error?.message,
-          errorCode: error?.code,
-          errorDetail: error?.detail,
-          errorConstraint: error?.constraint,
-          errorTable: error?.table,
-          errorColumn: error?.column,
         });
       }
     }
