@@ -31,5 +31,6 @@ export type TallyStockItemPayload = {
   openingBalance?: string;
   openingRate?: string;
   openingValue?: string;
+  hsnCode?: string;
   records?: any[];
 };

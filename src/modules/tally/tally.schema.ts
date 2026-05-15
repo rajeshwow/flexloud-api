@@ -45,6 +45,7 @@ const TallyStockItemRecordSchema = z.object({
   name: z.string().trim().min(1),
   parent: z.string().optional(),
   baseUnit: z.string().optional(),
+  hsnCode: z.string().optional(),
   openingBalance: OptionalNumberLikeSchema,
   openingRate: OptionalNumberLikeSchema,
   openingValue: OptionalNumberLikeSchema,

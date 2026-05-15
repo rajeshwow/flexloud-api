@@ -1432,6 +1432,13 @@ export async function pullTallyStockItems(input: {
 }) {
   const connection = await getTallyConnection(input.tenantId);
 
+  console.log("[TALLY STOCK SERVICE START]", {
+    tenantId: input.tenantId,
+    userId: input.userId || null,
+    recordsCount: input.records?.length || 0,
+    firstRecord: input.records?.[0] || null,
+  });
+
   const job = await createJob({
     tenantId: input.tenantId,
     connectionId: connection?.id || null,
@@ -1450,6 +1457,12 @@ export async function pullTallyStockItems(input: {
     for (const row of input.records) {
       try {
         const mapped = mapTallyStockItemToProduct(row);
+        console.log("[TALLY STOCK MAPPED PRODUCT]", {
+          rawName: row.name,
+          rawGuid: row.guid,
+          rawMasterId: row.masterId,
+          mapped,
+        });
 
         const existingMapping = row.guid
           ? await client.query(
@@ -1465,6 +1478,12 @@ export async function pullTallyStockItems(input: {
             )
           : { rowCount: 0, rows: [] as any[] };
 
+        console.log("[TALLY STOCK EXISTING MAPPING]", {
+          tallyGuid: row.guid,
+          rowCount: existingMapping.rowCount,
+          crmEntityId: existingMapping.rows?.[0]?.crm_entity_id || null,
+        });
+
         let productId: string;
 
         if (
@@ -1473,36 +1492,38 @@ export async function pullTallyStockItems(input: {
         ) {
           productId = existingMapping.rows[0].crm_entity_id;
 
-          await client.query(
+          const updateByMappingResult = await client.query(
             `
-            UPDATE products
-            SET name = $3,
-                part_number = $4,
-                unit_uqc = $5,
-                category = $6,
-                description = $7,
-                status = $8,
-                cost_price_currency = $9,
-                cost_price = $10,
-                msp_currency = $11,
-                msp = $12,
-                selling_price_currency = $13,
-                selling_price = $14,
-                tax = $15,
-                opening_stock = $16,
-                opening_stock_value = $17,
-                stock_on_hand = $18,
-                available_for_sale = $19,
-                updated_by = $20,
-                updated_at = NOW()
-            WHERE id = $1
-              AND tenant_id = $2
-            `,
+  UPDATE products
+  SET name = $3,
+      part_number = $4,
+      hsn_code = $5,
+      unit_uqc = $6,
+      category = $7,
+      description = $8,
+      status = $9,
+      cost_price_currency = $10,
+      cost_price = $11,
+      msp_currency = $12,
+      msp = $13,
+      selling_price_currency = $14,
+      selling_price = $15,
+      tax = $16,
+      opening_stock = $17,
+      opening_stock_value = $18,
+      stock_on_hand = $19,
+      available_for_sale = $20,
+      updated_by = $21,
+      updated_at = NOW()
+  WHERE id = $1
+    AND tenant_id = $2
+  `,
             [
               productId,
               input.tenantId,
               mapped.name,
               mapped.part_number,
+              mapped.hsn_code,
               mapped.unit_uqc,
               mapped.category,
               mapped.description,
@@ -1521,6 +1542,22 @@ export async function pullTallyStockItems(input: {
               input.userId || null,
             ],
           );
+
+          if (updateByMappingResult.rowCount === 0) {
+            await client.query(
+              `
+    DELETE FROM tally_entity_mappings
+    WHERE tenant_id = $1
+      AND entity_type IN ('stock_item', 'product')
+      AND tally_guid = $2
+    `,
+              [input.tenantId, row.guid],
+            );
+
+            throw new Error(
+              `Stale stock_item mapping found. Mapping product does not exist anymore. Please sync again. Tally GUID: ${row.guid}`,
+            );
+          }
         } else {
           const existingByPartNumber = mapped.part_number
             ? await client.query(
@@ -1540,32 +1577,34 @@ export async function pullTallyStockItems(input: {
 
             await client.query(
               `
-              UPDATE products
-              SET name = $3,
-                  unit_uqc = $4,
-                  category = $5,
-                  description = $6,
-                  status = $7,
-                  cost_price_currency = $8,
-                  cost_price = $9,
-                  msp_currency = $10,
-                  msp = $11,
-                  selling_price_currency = $12,
-                  selling_price = $13,
-                  tax = $14,
-                  opening_stock = $15,
-                  opening_stock_value = $16,
-                  stock_on_hand = $17,
-                  available_for_sale = $18,
-                  updated_by = $19,
-                  updated_at = NOW()
-              WHERE id = $1
-                AND tenant_id = $2
-              `,
+  UPDATE products
+  SET name = $3,
+      hsn_code = $4,
+      unit_uqc = $5,
+      category = $6,
+      description = $7,
+      status = $8,
+      cost_price_currency = $9,
+      cost_price = $10,
+      msp_currency = $11,
+      msp = $12,
+      selling_price_currency = $13,
+      selling_price = $14,
+      tax = $15,
+      opening_stock = $16,
+      opening_stock_value = $17,
+      stock_on_hand = $18,
+      available_for_sale = $19,
+      updated_by = $20,
+      updated_at = NOW()
+  WHERE id = $1
+    AND tenant_id = $2
+  `,
               [
                 productId,
                 input.tenantId,
                 mapped.name,
+                mapped.hsn_code,
                 mapped.unit_uqc,
                 mapped.category,
                 mapped.description,
@@ -1677,6 +1716,16 @@ export async function pullTallyStockItems(input: {
           tallyName: row.name || null,
           errorMessage: error?.message || "Unknown stock item sync error",
           rawPayload: row,
+        });
+
+        console.log("[TALLY STOCK ROW FAILED]", {
+          row,
+          errorMessage: error?.message,
+          errorCode: error?.code,
+          errorDetail: error?.detail,
+          errorConstraint: error?.constraint,
+          errorTable: error?.table,
+          errorColumn: error?.column,
         });
       }
     }

@@ -259,3 +259,45 @@ export async function getProductsHandler(
     next(error);
   }
 }
+
+export async function getProductCategoriesHandler(req: any, res: any) {
+  const tenantId = req.user?.tenantId;
+
+  if (!tenantId) {
+    return res.status(400).json({
+      statusCode: 400,
+      message: "Tenant not found",
+      data: [],
+    });
+  }
+
+  const result = await pool.query(
+    `
+      SELECT DISTINCT TRIM(category) AS category
+      FROM products
+      WHERE tenant_id = $1
+        AND category IS NOT NULL
+        AND TRIM(category) <> ''
+      ORDER BY TRIM(category) ASC
+    `,
+    [tenantId],
+  );
+
+  const categories = result.rows.map((row) => ({
+    label: row.category,
+    value: row.category,
+  }));
+
+  return res.json({
+    statusCode: 200,
+    message: "Product categories fetched successfully",
+    data: categories.length
+      ? categories
+      : [
+          {
+            label: "Others",
+            value: "Others",
+          },
+        ],
+  });
+}
