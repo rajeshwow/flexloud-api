@@ -462,7 +462,7 @@ async function generateQuotePdfBuffer(quote: any) {
     const page = await browser.newPage();
 
     await page.setContent(buildQuotePdfHtml(quote), {
-      waitUntil: "networkidle0",
+      waitUntil: "domcontentloaded",
     });
 
     const pdf = await page.pdf({
