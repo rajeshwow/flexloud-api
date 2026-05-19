@@ -38,6 +38,7 @@ export const CreatePurchaseOrderSchema = z.object({
         price: z.coerce.number().min(0),
         discount: z.coerce.number().min(0).default(0),
         unit: z.string().optional().nullable(),
+        description: z.string().optional().nullable(),
       }),
     )
     .min(1),

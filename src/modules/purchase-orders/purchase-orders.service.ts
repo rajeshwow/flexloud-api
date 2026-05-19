@@ -105,6 +105,7 @@ export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
               'id', poi.id,
               'item_name', poi.item_name,
               'item_code', poi.item_code,
+              'description', poi.description,
               'quantity', poi.quantity,
               'rate', poi.rate,
               'amount', poi.amount,
@@ -183,6 +184,7 @@ export const getPurchaseOrderByIdHandler = async (
           'id', poi.id,
           'item_name', poi.item_name,
           'item_code', poi.item_code,
+          'description', poi.description,
           'quantity', poi.quantity,
           'rate', poi.rate,
           'amount', poi.amount,
@@ -354,6 +356,7 @@ export const createPurchaseOrderHandler = async (
       purchase_order_id,
       item_name,
       item_code,
+      description,
       quantity,
       rate,
       amount,
@@ -361,13 +364,14 @@ export const createPurchaseOrderHandler = async (
       raw_tally_data
     )
     VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8
+      $1, $2, $3, $4, $5, $6, $7, $8, $9
     )
     `,
         [
           purchaseOrder.id,
           product?.name || null, // ✅ FIXED
           product?.part_number || item.product_id, // ✅ FIXED
+          item.description || null,
           quantity,
           rate,
           amount,
@@ -450,17 +454,19 @@ export const updatePurchaseOrderHandler = async (
           purchase_order_id,
           item_name,
           item_code,
+          description,
           quantity,
           rate,
           amount,
           raw_tally_data
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
         `,
         [
           id,
           item.product_name,
           item.product_id,
+          item.description || null,
           item.quantity,
           item.price,
           amount,

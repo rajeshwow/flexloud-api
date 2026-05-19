@@ -15,6 +15,7 @@ const SalesOrderItemSchema = z.object({
   price: z.coerce.number().min(0).default(0),
   discount: z.coerce.number().min(0).default(0),
   tax: z.coerce.number().min(0).default(0),
+  description: z.string().optional().nullable(),
 });
 
 export const CreateSalesOrderSchema = z.object({

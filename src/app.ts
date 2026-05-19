@@ -14,6 +14,7 @@ import aiAssistantRouter from "./modules/ai-assistant/ai-assistant.routes";
 import aiInsightsRouter from "./modules/ai-insights/ai-insights.routes";
 import attendanceRouter from "./modules/attendance/attendance.routes";
 import contactsRouter from "./modules/contacts/contacts.routes";
+import costCentersRouter from "./modules/cost-centers/cost-centers.routes";
 import dashboardRouter from "./modules/dashboard/dashboard.routes";
 import deliveryChallansRouter from "./modules/delivery-challans/deliveryChallans.routes";
 import geoVisitsRouter from "./modules/geo-visits/geo-visits.routes";
@@ -25,6 +26,7 @@ import masterRouter from "./modules/masters/masters.routes";
 import myDayRouter from "./modules/my-day/my-day.routes";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
+import outstandingRouter from "./modules/outstandings/outstandings.routes";
 import productsRouter from "./modules/products/products.routes";
 import purchaseOrderRouter from "./modules/purchase-orders/purchase-orders.routes";
 import quotesRouter from "./modules/quotes/quotes.routes";
@@ -119,6 +121,8 @@ export function createApp() {
   app.use("/v1/:slug/delivery-challans", deliveryChallansRouter);
   app.use("/v1/:slug/tally-performance", tallyPerformanceRouter);
   app.use("/v1/:slug/warehouse", warehouseRouter);
+  app.use("/v1/:slug/cost-centers", costCentersRouter);
+  app.use("/v1/:slug/outstandings", outstandingRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

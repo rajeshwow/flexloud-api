@@ -268,7 +268,8 @@ export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
         soi.*,
         soi.item_name AS product_name,
         soi.item_code AS sku,
-        soi.rate AS price
+        soi.rate AS price,
+        soi.description AS item_description
       FROM sales_order_items soi
       WHERE soi.sales_order_id = $1
         AND soi.tenant_id = $2
@@ -407,19 +408,21 @@ VALUES (
       sales_order_id,
       item_name,
       item_code,
+      description,
       quantity,
       rate,
       amount,
       unit,
       raw_tally_data
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
     `,
         [
           tenantId,
           salesOrder.id,
           productInfo.itemName,
           productInfo.itemCode,
+          item.description || null,
           item.quantity,
           productInfo.rate,
           amount,
@@ -578,19 +581,21 @@ export const updateSalesOrderHandler = async (req: Request, res: Response) => {
       sales_order_id,
       item_name,
       item_code,
+      description,
       quantity,
       rate,
       amount,
       unit,
       raw_tally_data
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
     `,
           [
             tenantId,
             id,
             productInfo.itemName,
             productInfo.itemCode,
+            item.description || null,
             item.quantity,
             productInfo.rate,
             amount,

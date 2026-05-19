@@ -22,6 +22,10 @@ type TallyVoucherItemPayload = {
 };
 
 type TallyOutstandingPayload = {
+  costCenterGuid?: string;
+  costCenterName?: string;
+  costCategory?: string;
+  costCenterAmount?: string | number;
   guid?: string | null;
   tallyGuid?: string | null;
 
@@ -63,6 +67,11 @@ type TallyOutstandingPayload = {
   pending_amount?: number | string | null;
   outstandingAmount?: number | string | null;
   outstanding_amount?: number | string | null;
+
+  cost_center_guid?: string | null;
+  cost_center_name?: string | null;
+  cost_category?: string | null;
+  cost_center_amount?: number | string | null;
 };
 
 type TallyEmployeePayload = {
@@ -116,6 +125,19 @@ type TallyVoucherPayload = {
   amount?: number | string | null;
   status?: string | null;
   items?: TallyVoucherItemPayload[];
+
+  costCenterGuid?: string | null;
+  costCenterName?: string | null;
+  costCategory?: string | null;
+  costCenterAmount?: number | string | null;
+
+  cost_center_guid?: string | null;
+  cost_center_name?: string | null;
+  cost_category?: string | null;
+  cost_center_amount?: number | string | null;
+
+  cost_center_allocations?: any[];
+  costCenterAllocations?: any[];
 };
 
 function getTenantIdFromReq(req: Request) {
@@ -196,6 +218,78 @@ function normalizeDateOrNull(value?: string | null) {
   return null;
 }
 
+async function resolveCostCenterId(
+  client: any,
+  tenantId: string,
+  input: {
+    cost_center_guid?: string | null;
+    cost_center_name?: string | null;
+  },
+) {
+  const guid = input.cost_center_guid
+    ? String(input.cost_center_guid).trim()
+    : null;
+  const name = input.cost_center_name
+    ? String(input.cost_center_name).trim()
+    : null;
+
+  if (!guid && !name) return null;
+
+  if (guid) {
+    const { rows } = await client.query(
+      `
+      SELECT id
+      FROM cost_centers
+      WHERE tenant_id = $1
+        AND tally_guid = $2
+      LIMIT 1
+      `,
+      [tenantId, guid],
+    );
+
+    if (rows[0]?.id) return rows[0].id;
+  }
+
+  if (name) {
+    const { rows } = await client.query(
+      `
+      SELECT id
+      FROM cost_centers
+      WHERE tenant_id = $1
+        AND lower(name) = lower($2)
+      LIMIT 1
+      `,
+      [tenantId, name],
+    );
+
+    if (rows[0]?.id) return rows[0].id;
+
+    const created = await client.query(
+      `
+      INSERT INTO cost_centers (
+        tenant_id,
+        tally_guid,
+        name,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, 'active', now(), now())
+      ON CONFLICT (tenant_id, tally_guid)
+      DO UPDATE SET
+        name = EXCLUDED.name,
+        updated_at = now()
+      RETURNING id
+      `,
+      [tenantId, name, name],
+    );
+
+    return created.rows[0]?.id || null;
+  }
+
+  return null;
+}
+
 function normalizeOutstandingRow(row: TallyOutstandingPayload) {
   const ledgerGuid =
     cleanText(row.ledgerGuid) ||
@@ -250,6 +344,19 @@ function normalizeOutstandingRow(row: TallyOutstandingPayload) {
         row.outstandingAmount ??
         row.outstanding_amount ??
         row.amount,
+      0,
+    ),
+
+    cost_center_guid:
+      cleanText(row.cost_center_guid) || cleanText(row.costCenterGuid),
+
+    cost_center_name:
+      cleanText(row.cost_center_name) || cleanText(row.costCenterName),
+
+    cost_category: cleanText(row.cost_category) || cleanText(row.costCategory),
+
+    cost_center_amount: toNumber(
+      row.cost_center_amount ?? row.costCenterAmount,
       0,
     ),
   };
@@ -943,6 +1050,11 @@ export async function pullTallyOutstandings(input: {
       try {
         const mapped = normalizeOutstandingRow(row);
 
+        const costCenterId = await resolveCostCenterId(client, input.tenantId, {
+          cost_center_guid: mapped.cost_center_guid,
+          cost_center_name: mapped.cost_center_name,
+        });
+
         if (!mapped.ledger_name) {
           throw new Error("ledger_name is required for outstanding sync");
         }
@@ -981,7 +1093,7 @@ export async function pullTallyOutstandings(input: {
 
         await client.query(
           `
-      INSERT INTO tally_outstandings
+       INSERT INTO tally_outstandings
       (
         tenant_id,
         tally_guid,
@@ -996,11 +1108,16 @@ export async function pullTallyOutstandings(input: {
         bill_type,
         bill_amount,
         pending_amount,
-        synced_at
+        synced_at,
+        cost_center_guid,
+        cost_center_name,
+        cost_center_id,
+        cost_category,
+        cost_center_amount
       )
       VALUES
       (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),$14,$15,$16,$17,$18
       )
       ON CONFLICT (tenant_id, ledger_guid, bill_ref, voucher_number)
       DO UPDATE SET
@@ -1013,7 +1130,12 @@ export async function pullTallyOutstandings(input: {
         bill_type = EXCLUDED.bill_type,
         bill_amount = EXCLUDED.bill_amount,
         pending_amount = EXCLUDED.pending_amount,
-        synced_at = NOW()
+        synced_at = NOW(),
+        cost_center_guid = EXCLUDED.cost_center_guid,
+        cost_center_name = EXCLUDED.cost_center_name,
+        cost_center_id = EXCLUDED.cost_center_id,
+        cost_category = EXCLUDED.cost_category,
+        cost_center_amount = EXCLUDED.cost_center_amount
       `,
           [
             input.tenantId,
@@ -1029,6 +1151,11 @@ export async function pullTallyOutstandings(input: {
             mapped.bill_type,
             mapped.bill_amount,
             mapped.pending_amount,
+            mapped.cost_center_guid,
+            mapped.cost_center_name,
+            costCenterId,
+            mapped.cost_category,
+            mapped.cost_center_amount,
           ],
         );
 
@@ -1859,6 +1986,32 @@ async function pullTallyVouchers(input: {
         const totalAmount = toNumber(row.totalAmount ?? row.amount);
         const status = cleanText(row.status) || "draft";
 
+        const costCenterGuid = cleanText(
+          (row as any).cost_center_guid || (row as any).costCenterGuid,
+        );
+
+        const costCenterName = cleanText(
+          (row as any).cost_center_name || (row as any).costCenterName,
+        );
+
+        const costCategory = cleanText(
+          (row as any).cost_category || (row as any).costCategory,
+        );
+
+        const costCenterAmount = toNumber(
+          (row as any).cost_center_amount || (row as any).costCenterAmount,
+        );
+
+        const costCenterAllocations =
+          (row as any).cost_center_allocations ||
+          (row as any).costCenterAllocations ||
+          [];
+
+        const costCenterId = await resolveCostCenterId(client, input.tenantId, {
+          cost_center_guid: costCenterGuid,
+          cost_center_name: costCenterName,
+        });
+
         let orderId: string | null = null;
 
         const existingOrder = await client.query(
@@ -1881,21 +2034,27 @@ async function pullTallyVouchers(input: {
           if (isPO) {
             await client.query(
               `
-              UPDATE purchase_orders
-              SET
-                tally_guid = COALESCE($3, tally_guid),
-                voucher_number = $4,
-                voucher_date = COALESCE($5, voucher_date),
-                po_date = COALESCE($5, po_date),
-                supplier_name = $6,
-                reference_number = $7,
-                total_amount = $8,
-                status = $9,
-                raw_tally_data = $10,
-                updated_at = NOW()
-              WHERE id = $1
-                AND tenant_id = $2
-              `,
+  UPDATE purchase_orders
+  SET
+    tally_guid = COALESCE($3, tally_guid),
+    voucher_number = $4,
+    voucher_date = COALESCE($5, voucher_date),
+    po_date = COALESCE($5, po_date),
+    supplier_name = $6,
+    reference_number = $7,
+    total_amount = $8,
+    status = $9,
+    raw_tally_data = $10,
+    cost_center_guid = $11,
+    cost_center_name = $12,
+    cost_center_id = $13,
+    cost_category = $14,
+    cost_center_amount = $15,
+    cost_center_allocations = $16,
+    updated_at = NOW()
+  WHERE id = $1
+    AND tenant_id = $2
+  `,
               [
                 orderId,
                 input.tenantId,
@@ -1907,28 +2066,40 @@ async function pullTallyVouchers(input: {
                 totalAmount,
                 status,
                 JSON.stringify(row),
+                costCenterGuid,
+                costCenterName,
+                costCenterId,
+                costCategory,
+                costCenterAmount,
+                JSON.stringify(costCenterAllocations),
               ],
             );
           } else {
             await client.query(
               `
-              UPDATE sales_orders
-              SET
-                tally_guid = COALESCE($3, tally_guid),
-                voucher_number = $4,
-                voucher_date = COALESCE($5, voucher_date),
-                so_date = COALESCE($5, so_date),
-                customer_name = $6,
-                reference_number = $7,
-                total_amount = $8,
-                status = $9,
-                raw_tally_data = $10,
-                customer_id = $11,
-                organization_id = $11,
-                updated_at = NOW()
-              WHERE id = $1
-                AND tenant_id = $2
-              `,
+  UPDATE sales_orders
+  SET
+    tally_guid = COALESCE($3, tally_guid),
+    voucher_number = $4,
+    voucher_date = COALESCE($5, voucher_date),
+    so_date = COALESCE($5, so_date),
+    customer_name = $6,
+    reference_number = $7,
+    total_amount = $8,
+    status = $9,
+    raw_tally_data = $10,
+    customer_id = $11,
+    organization_id = $11,
+    cost_center_guid = $12,
+    cost_center_name = $13,
+    cost_center_id = $14,
+    cost_category = $15,
+    cost_center_amount = $16,
+    cost_center_allocations = $17,
+    updated_at = NOW()
+  WHERE id = $1
+    AND tenant_id = $2
+  `,
               [
                 orderId,
                 input.tenantId,
@@ -1941,6 +2112,12 @@ async function pullTallyVouchers(input: {
                 status,
                 JSON.stringify(row),
                 organizationId,
+                costCenterGuid,
+                costCenterName,
+                costCenterId,
+                costCategory,
+                costCenterAmount,
+                JSON.stringify(costCenterAllocations),
               ],
             );
           }
@@ -1948,27 +2125,33 @@ async function pullTallyVouchers(input: {
           if (isPO) {
             const orderResult = await client.query(
               `
-              INSERT INTO purchase_orders
-              (
-                tenant_id,
-                tally_guid,
-                voucher_number,
-                voucher_date,
-                po_date,
-                supplier_name,
-                reference_number,
-                total_amount,
-                status,
-                raw_tally_data,
-                created_at,
-                updated_at
-              )
-              VALUES
-              (
-                $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,NOW(),NOW()
-              )
-              RETURNING id
-              `,
+  INSERT INTO purchase_orders
+  (
+    tenant_id,
+    tally_guid,
+    voucher_number,
+    voucher_date,
+    po_date,
+    supplier_name,
+    reference_number,
+    total_amount,
+    status,
+    raw_tally_data,
+    cost_center_guid,
+    cost_center_name,
+    cost_center_id,
+    cost_category,
+    cost_center_amount,
+    cost_center_allocations,
+    created_at,
+    updated_at
+  )
+  VALUES
+  (
+    $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW()
+  )
+  RETURNING id
+  `,
               [
                 input.tenantId,
                 tallyGuid,
@@ -1979,6 +2162,12 @@ async function pullTallyVouchers(input: {
                 totalAmount,
                 status,
                 JSON.stringify(row),
+                costCenterGuid,
+                costCenterName,
+                costCenterId,
+                costCategory,
+                costCenterAmount,
+                JSON.stringify(costCenterAllocations),
               ],
             );
 
@@ -1986,29 +2175,35 @@ async function pullTallyVouchers(input: {
           } else {
             const orderResult = await client.query(
               `
-              INSERT INTO sales_orders
-              (
-                tenant_id,
-                tally_guid,
-                voucher_number,
-                voucher_date,
-                so_date,
-                customer_name,
-                reference_number,
-                total_amount,
-                status,
-                raw_tally_data,
-                customer_id,
-                organization_id,
-                created_at,
-                updated_at
-              )
-              VALUES
-              (
-                $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$10,NOW(),NOW()
-              )
-              RETURNING id
-              `,
+  INSERT INTO sales_orders
+  (
+    tenant_id,
+    tally_guid,
+    voucher_number,
+    voucher_date,
+    so_date,
+    customer_name,
+    reference_number,
+    total_amount,
+    status,
+    raw_tally_data,
+    customer_id,
+    organization_id,
+    cost_center_guid,
+    cost_center_name,
+    cost_center_id,
+    cost_category,
+    cost_center_amount,
+    cost_center_allocations,
+    created_at,
+    updated_at
+  )
+  VALUES
+  (
+    $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW()
+  )
+  RETURNING id
+  `,
               [
                 input.tenantId,
                 tallyGuid,
@@ -2020,6 +2215,12 @@ async function pullTallyVouchers(input: {
                 status,
                 JSON.stringify(row),
                 organizationId,
+                costCenterGuid,
+                costCenterName,
+                costCenterId,
+                costCategory,
+                costCenterAmount,
+                JSON.stringify(costCenterAllocations),
               ],
             );
 
@@ -2341,6 +2542,87 @@ export async function getTallyEmployeesHandler(
   }
 }
 
+export async function pullTallyCostCenters(input: {
+  tenantId: string;
+  userId?: string | null;
+  records: any[];
+}) {
+  const client = await pool.connect();
+
+  let successCount = 0;
+  let failedCount = 0;
+
+  try {
+    await client.query("BEGIN");
+
+    for (const row of input.records || []) {
+      try {
+        const name = String(row.name || "").trim();
+
+        if (!name) {
+          throw new Error("cost center name is required");
+        }
+
+        const tallyGuid = row.guid ? String(row.guid).trim() : null;
+
+        const { rows } = await client.query(
+          `
+          INSERT INTO cost_centers (
+            tenant_id,
+            tally_guid,
+            name,
+            parent_name,
+            description,
+            status,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, 'active', now(), now()
+          )
+          ON CONFLICT (tenant_id, tally_guid)
+          DO UPDATE SET
+            name = EXCLUDED.name,
+            parent_name = EXCLUDED.parent_name,
+            description = EXCLUDED.description,
+            updated_at = now()
+          RETURNING id
+          `,
+          [
+            input.tenantId,
+            tallyGuid || name,
+            name,
+            row.parent || row.category || null,
+            row.description || null,
+          ],
+        );
+
+        successCount++;
+      } catch (error: any) {
+        failedCount++;
+        console.error("[TALLY][COST_CENTER][ERROR]", {
+          name: row?.name,
+          guid: row?.guid,
+          error: error?.message,
+        });
+      }
+    }
+
+    await client.query("COMMIT");
+
+    return {
+      successCount,
+      failedCount,
+      totalCount: input.records?.length || 0,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function pullTallyEmployeesHandler(
   req: Request,
   res: Response,
@@ -2361,6 +2643,27 @@ export async function pullTallyEmployeesHandler(
     res.json({
       message: "Tally employees synced successfully",
       data,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function pullCostCentersHandler(req: any, res: any, next: any) {
+  try {
+    const tenantId = req.tenant?.id || req.tenantId;
+    const userId = req.user?.id || null;
+
+    const result = await pullTallyCostCenters({
+      tenantId,
+      userId,
+      records: req.body?.records || [],
+    });
+
+    res.json({
+      statusCode: 200,
+      message: "Cost centers synced successfully",
+      data: result,
     });
   } catch (error) {
     next(error);

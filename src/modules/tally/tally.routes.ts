@@ -4,6 +4,7 @@ import {
   getTallyEmployeesHandler,
   getTallySyncErrorsHandler,
   getTallySyncHistoryHandler,
+  pullCostCentersHandler,
   pullTallyEmployeesHandler,
   pullTallyLedgersHandler,
   pullTallyOutstandingsHandler,
@@ -78,6 +79,12 @@ tallyRouter.post(
   "/pull/employees",
   requireTallyAgent,
   pullTallyEmployeesHandler,
+);
+
+tallyRouter.post(
+  "/pull/cost-centers",
+  requireTallyAgent,
+  pullCostCentersHandler,
 );
 
 export default tallyRouter;
