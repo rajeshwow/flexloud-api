@@ -89,6 +89,10 @@ const TallyVoucherSchema = z.object({
   status: z.string().nullable().optional(),
 
   items: z.array(TallyVoucherItemSchema).optional().default([]),
+
+  voucher_date: z.string().nullable().optional(),
+  DATE: z.any().optional(),
+  VOUCHERDATE: z.any().optional(),
 });
 
 export const PullPurchaseOrdersSchema =

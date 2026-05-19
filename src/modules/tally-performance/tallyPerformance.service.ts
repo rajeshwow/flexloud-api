@@ -73,7 +73,13 @@ export async function getTallyPerformanceSummaryHandler(
          AND tem.entity_type = 'organization'
         JOIN tally_outstandings t
           ON t.tenant_id = tem.tenant_id
-         AND t.ledger_guid = tem.tally_guid
+         AND (
+  NULLIF(t.ledger_guid, '') = tem.tally_guid
+  OR (
+    (t.ledger_guid IS NULL OR t.ledger_guid = '')
+    AND lower(trim(t.ledger_name)) = lower(trim(tem.tally_name))
+  )
+)
         WHERE o.tenant_id = $1
           AND o.assigned_to IS NULL
           AND t.pending_amount > 0
@@ -270,7 +276,13 @@ export async function getEmployeeTallyPerformanceHandler(
 
       LEFT JOIN tally_outstandings t
         ON t.tenant_id = tem.tenant_id
-       AND t.ledger_guid = tem.tally_guid
+       AND (
+  NULLIF(t.ledger_guid, '') = tem.tally_guid
+  OR (
+    (t.ledger_guid IS NULL OR t.ledger_guid = '')
+    AND lower(trim(t.ledger_name)) = lower(trim(tem.tally_name))
+  )
+)
        AND t.pending_amount > 0
 
       WHERE u.tenant_id = $1
@@ -460,7 +472,13 @@ export async function getTallyAgeingReportHandler(req: Request, res: Response) {
 
       JOIN tally_outstandings t
         ON t.tenant_id = tem.tenant_id
-       AND t.ledger_guid = tem.tally_guid
+       AND (
+  NULLIF(t.ledger_guid, '') = tem.tally_guid
+  OR (
+    (t.ledger_guid IS NULL OR t.ledger_guid = '')
+    AND lower(trim(t.ledger_name)) = lower(trim(tem.tally_name))
+  )
+)
 
       WHERE u.tenant_id = $1
         AND t.bill_type = 'receivable'
@@ -621,7 +639,13 @@ export async function getUnassignedOutstandingOrganizationsHandler(
 
       JOIN tally_outstandings t
         ON t.tenant_id = tem.tenant_id
-       AND t.ledger_guid = tem.tally_guid
+       AND (
+  NULLIF(t.ledger_guid, '') = tem.tally_guid
+  OR (
+    (t.ledger_guid IS NULL OR t.ledger_guid = '')
+    AND lower(trim(t.ledger_name)) = lower(trim(tem.tally_name))
+  )
+)
 
       WHERE o.tenant_id = $1
         AND o.assigned_to IS NULL

@@ -7,12 +7,76 @@ import {
   UpdateSalesOrderSchema,
 } from "./sales-orders.schema";
 
-const toNumber = (value: any) => Number(value || 0);
+const toNumber = (value: any) => {
+  if (value === undefined || value === null || value === "") return 0;
+
+  const cleaned = String(value)
+    .replace(/,/g, "")
+    .replace(/[^\d.-]/g, "");
+  const num = Number(cleaned);
+
+  return Number.isFinite(num) ? num : 0;
+};
 
 const calculateItemAmount = (item: any) => {
   const qty = toNumber(item.quantity);
   const rate = toNumber(item.price || item.rate);
   return qty * rate;
+};
+
+const getRawNumber = (raw: any, keys: string[]) => {
+  for (const key of keys) {
+    const value = raw?.[key];
+
+    if (value !== undefined && value !== null && value !== "") {
+      return toNumber(value);
+    }
+  }
+
+  return 0;
+};
+
+const buildSalesOrderTotals = (order: any, items: any[]) => {
+  const raw = order.raw_tally_data || {};
+
+  const itemSubtotal = items.reduce((sum, item) => {
+    const amount = toNumber(item.amount);
+
+    if (amount) return sum + amount;
+
+    return sum + toNumber(item.quantity) * toNumber(item.rate || item.price);
+  }, 0);
+
+  const grandTotal = toNumber(
+    order.grand_total ||
+      order.total_amount ||
+      raw.totalAmount ||
+      raw.grandTotal,
+  );
+
+  const rawSubtotal = getRawNumber(raw, ["subtotal", "subTotal"]);
+  const rawDiscount = getRawNumber(raw, ["discount", "discountAmount"]);
+  const rawTax = getRawNumber(raw, ["tax", "taxAmount", "gstAmount"]);
+  const rawShipping = getRawNumber(raw, ["shipping", "shippingAmount"]);
+
+  const subtotal = rawSubtotal || itemSubtotal;
+  const discount = rawDiscount;
+  const shipping = rawShipping;
+
+  // Tally me tax separate nahi aa raha to grand_total - item subtotal se derive karenge
+  const derivedTax =
+    grandTotal > subtotal ? grandTotal - subtotal + discount - shipping : 0;
+
+  const tax = rawTax || derivedTax;
+
+  return {
+    subtotal,
+    discount,
+    tax,
+    shipping,
+    grand_total: grandTotal,
+    total_payable: grandTotal,
+  };
 };
 
 const resolveProductForItem = async (
@@ -213,11 +277,23 @@ export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
       [id, tenantId],
     );
 
+    const order = orderResult.rows[0];
+    const items = itemsResult.rows;
+    const totals = buildSalesOrderTotals(order, items);
+
     res.json({
       message: "Sales order fetched successfully",
       data: {
-        ...orderResult.rows[0],
-        items: itemsResult.rows,
+        ...order,
+        ...totals,
+        expected_delivery_date:
+          order.expected_delivery_date ||
+          order.raw_tally_data?.expected_delivery_date ||
+          null,
+        currency: order.raw_tally_data?.currency || order.currency || "₹",
+        notes: order.raw_tally_data?.notes || order.notes || null,
+        terms: order.raw_tally_data?.terms || order.terms || null,
+        items,
       },
     });
   } catch (error: any) {

@@ -6,8 +6,6 @@ import {
 } from "./tally.mapper";
 import {
   PullLedgersSchema,
-  PullPurchaseOrdersSchema,
-  PullSalesOrdersSchema,
   PullStockItemsSchema,
   UpsertTallyConnectionSchema,
 } from "./tally.schema";
@@ -98,12 +96,17 @@ type TallyEmployeePayload = {
 };
 
 type TallyVoucherPayload = {
+  voucher_date: string;
+  DATE: any;
+  VOUCHERDATE: any;
   guid?: string | null;
   masterId?: string | number | null;
   alterId?: string | number | null;
   voucherNumber?: string | null;
   number?: string | null;
   date?: string | null;
+  voucherDate?: string | null;
+  voucherType?: string | null;
   partyName?: string | null;
   ledgerName?: string | null;
   referenceNumber?: string | null;
@@ -494,13 +497,12 @@ async function findOrganizationIdByName(
 
   const result = await client.query(
     `
-    SELECT id
-    FROM organizations
-    WHERE tenant_id = $1
-      AND LOWER(name) = LOWER($2)
-      AND deleted_at IS NULL
-    LIMIT 1
-    `,
+  SELECT id
+  FROM organizations
+  WHERE tenant_id = $1
+    AND LOWER(name) = LOWER($2)
+  LIMIT 1
+  `,
     [tenantId, partyName],
   );
 
@@ -941,10 +943,6 @@ export async function pullTallyOutstandings(input: {
       try {
         const mapped = normalizeOutstandingRow(row);
 
-        // if (!mapped.ledger_guid) {
-        //   throw new Error("ledger_guid is required for outstanding sync");
-        // }
-
         if (!mapped.ledger_name) {
           throw new Error("ledger_name is required for outstanding sync");
         }
@@ -953,42 +951,70 @@ export async function pullTallyOutstandings(input: {
           throw new Error("bill_ref is required for outstanding sync");
         }
 
+        if (!mapped.ledger_guid) {
+          const ledgerResult = await client.query(
+            `
+        SELECT tally_guid
+        FROM tally_ledgers
+        WHERE tenant_id = $1
+          AND lower(trim(name)) = lower(trim($2))
+        LIMIT 1
+        `,
+            [input.tenantId, mapped.ledger_name],
+          );
+
+          mapped.ledger_guid = ledgerResult.rows?.[0]?.tally_guid || null;
+        }
+
+        if (!mapped.voucher_number) {
+          mapped.voucher_number = mapped.bill_ref;
+        }
+
+        if (!mapped.tally_guid) {
+          mapped.tally_guid = [
+            mapped.ledger_guid || mapped.ledger_name,
+            mapped.bill_ref,
+            mapped.voucher_number,
+            mapped.voucher_date || "",
+          ].join("::");
+        }
+
         await client.query(
           `
-          INSERT INTO tally_outstandings
-          (
-            tenant_id,
-            tally_guid,
-            ledger_guid,
-            ledger_name,
-            voucher_guid,
-            voucher_number,
-            voucher_type,
-            voucher_date,
-            due_date,
-            bill_ref,
-            bill_type,
-            bill_amount,
-            pending_amount,
-            synced_at
-          )
-          VALUES
-          (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()
-          )
-          ON CONFLICT (tenant_id, ledger_guid, bill_ref, voucher_number)
-          DO UPDATE SET
-            tally_guid = EXCLUDED.tally_guid,
-            ledger_name = EXCLUDED.ledger_name,
-            voucher_guid = EXCLUDED.voucher_guid,
-            voucher_type = EXCLUDED.voucher_type,
-            voucher_date = EXCLUDED.voucher_date,
-            due_date = EXCLUDED.due_date,
-            bill_type = EXCLUDED.bill_type,
-            bill_amount = EXCLUDED.bill_amount,
-            pending_amount = EXCLUDED.pending_amount,
-            synced_at = NOW()
-          `,
+      INSERT INTO tally_outstandings
+      (
+        tenant_id,
+        tally_guid,
+        ledger_guid,
+        ledger_name,
+        voucher_guid,
+        voucher_number,
+        voucher_type,
+        voucher_date,
+        due_date,
+        bill_ref,
+        bill_type,
+        bill_amount,
+        pending_amount,
+        synced_at
+      )
+      VALUES
+      (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()
+      )
+      ON CONFLICT (tenant_id, ledger_guid, bill_ref, voucher_number)
+      DO UPDATE SET
+        tally_guid = EXCLUDED.tally_guid,
+        ledger_name = EXCLUDED.ledger_name,
+        voucher_guid = EXCLUDED.voucher_guid,
+        voucher_type = EXCLUDED.voucher_type,
+        voucher_date = EXCLUDED.voucher_date,
+        due_date = EXCLUDED.due_date,
+        bill_type = EXCLUDED.bill_type,
+        bill_amount = EXCLUDED.bill_amount,
+        pending_amount = EXCLUDED.pending_amount,
+        synced_at = NOW()
+      `,
           [
             input.tenantId,
             mapped.tally_guid,
@@ -1761,6 +1787,8 @@ export async function pullTallyStockItems(input: {
 
 /* ----------------------------- PO / SO COMMON ----------------------------- */
 
+/* ----------------------------- PO / SO COMMON ----------------------------- */
+
 async function pullTallyVouchers(input: {
   tenantId: string;
   userId?: string | null;
@@ -1771,9 +1799,7 @@ async function pullTallyVouchers(input: {
 
   const headerTable = isPO ? "purchase_orders" : "sales_orders";
   const itemTable = isPO ? "purchase_order_items" : "sales_order_items";
-  const orderNumberColumn = isPO ? "po_number" : "so_number";
-  const dateColumn = isPO ? "po_date" : "so_date";
-  const partyColumn = isPO ? "vendor_id" : "customer_id";
+  const orderFkColumn = isPO ? "purchase_order_id" : "sales_order_id";
 
   const connection = await getTallyConnection(input.tenantId);
 
@@ -1792,11 +1818,17 @@ async function pullTallyVouchers(input: {
   try {
     await client.query("BEGIN");
 
-    for (const row of input.records) {
+    for (const row of input.records || []) {
       try {
-        const voucherNo = cleanText(row.voucherNumber || row.number);
-        if (!voucherNo) throw new Error("Voucher number is required");
+        const voucherNo = cleanText(
+          row.voucherNumber || row.number || row.referenceNumber || row.guid,
+        );
 
+        if (!voucherNo) {
+          throw new Error("Voucher number is required");
+        }
+
+        const tallyGuid = cleanText(row.guid);
         const partyName = cleanText(row.partyName || row.ledgerName);
         const organizationId = await findOrganizationIdByName(
           client,
@@ -1804,150 +1836,190 @@ async function pullTallyVouchers(input: {
           partyName,
         );
 
-        const orderDate = normalizeDate(row.date);
+        const voucherDate = normalizeDate(
+          row.voucherDate ||
+            row.voucher_date ||
+            row.date ||
+            row.DATE ||
+            row.VOUCHERDATE,
+        );
+
+        console.log("[CRM SAVE VOUCHER DATE]", {
+          entityType: input.entityType,
+          voucherNumber: row.voucherNumber,
+          rawVoucherDate: row.voucherDate,
+          rawVoucher_date: row.voucher_date,
+          rawDate: row.date,
+          finalVoucherDate: voucherDate,
+        });
+
+        const poDate = isPO ? voucherDate : null;
+        const soDate = !isPO ? voucherDate : null;
         const referenceNumber = cleanText(row.referenceNumber);
-        const referenceDate = normalizeDate(row.referenceDate);
-        const narration = cleanText(row.narration);
         const totalAmount = toNumber(row.totalAmount ?? row.amount);
         const status = cleanText(row.status) || "draft";
 
-        const existingMapping = row.guid
-          ? await client.query(
-              `
-              SELECT crm_entity_id
-              FROM tally_entity_mappings
-              WHERE tenant_id = $1
-                AND entity_type = $2
-                AND tally_guid = $3
-              LIMIT 1
-              `,
-              [input.tenantId, input.entityType, row.guid],
+        let orderId: string | null = null;
+
+        const existingOrder = await client.query(
+          `
+          SELECT id
+          FROM ${headerTable}
+          WHERE tenant_id = $1
+            AND (
+              ($2::text IS NOT NULL AND tally_guid = $2)
+              OR voucher_number = $3
             )
-          : { rowCount: 0, rows: [] as any[] };
+          LIMIT 1
+          `,
+          [input.tenantId, tallyGuid, voucherNo],
+        );
 
-        let orderId: string;
+        if (existingOrder.rowCount) {
+          orderId = existingOrder.rows[0].id;
 
-        if (
-          existingMapping.rowCount &&
-          existingMapping.rows[0]?.crm_entity_id
-        ) {
-          orderId = existingMapping.rows[0].crm_entity_id;
-
-          await client.query(
-            `
-            UPDATE ${headerTable}
-            SET ${orderNumberColumn} = $3,
-                ${dateColumn} = COALESCE($4, ${dateColumn}),
-                ${partyColumn} = $5,
-                party_name = $6,
-                reference_number = $7,
-                reference_date = $8,
-                narration = $9,
-                total_amount = $10,
-                status = $11,
-                source = 'tally',
-                updated_by = $12,
-                updated_at = NOW()
-            WHERE id = $1
-              AND tenant_id = $2
-            `,
-            [
-              orderId,
-              input.tenantId,
-              voucherNo,
-              orderDate,
-              organizationId,
-              partyName,
-              referenceNumber,
-              referenceDate,
-              narration,
-              totalAmount,
-              status,
-              input.userId || null,
-            ],
-          );
-        } else {
-          const existingByNumber = await client.query(
-            `
-            SELECT id
-            FROM ${headerTable}
-            WHERE tenant_id = $1
-              AND ${orderNumberColumn} = $2
-            LIMIT 1
-            `,
-            [input.tenantId, voucherNo],
-          );
-
-          if (existingByNumber.rowCount) {
-            orderId = existingByNumber.rows[0].id;
-
+          if (isPO) {
             await client.query(
               `
-              UPDATE ${headerTable}
-              SET ${dateColumn} = COALESCE($3, ${dateColumn}),
-                  ${partyColumn} = $4,
-                  party_name = $5,
-                  reference_number = $6,
-                  reference_date = $7,
-                  narration = $8,
-                  total_amount = $9,
-                  status = $10,
-                  source = 'tally',
-                  updated_by = $11,
-                  updated_at = NOW()
+              UPDATE purchase_orders
+              SET
+                tally_guid = COALESCE($3, tally_guid),
+                voucher_number = $4,
+                voucher_date = COALESCE($5, voucher_date),
+                po_date = COALESCE($5, po_date),
+                supplier_name = $6,
+                reference_number = $7,
+                total_amount = $8,
+                status = $9,
+                raw_tally_data = $10,
+                updated_at = NOW()
               WHERE id = $1
                 AND tenant_id = $2
               `,
               [
                 orderId,
                 input.tenantId,
-                orderDate,
-                organizationId,
+                tallyGuid,
+                voucherNo,
+                voucherDate,
                 partyName,
                 referenceNumber,
-                referenceDate,
-                narration,
                 totalAmount,
                 status,
-                input.userId || null,
+                JSON.stringify(row),
               ],
             );
           } else {
+            await client.query(
+              `
+              UPDATE sales_orders
+              SET
+                tally_guid = COALESCE($3, tally_guid),
+                voucher_number = $4,
+                voucher_date = COALESCE($5, voucher_date),
+                so_date = COALESCE($5, so_date),
+                customer_name = $6,
+                reference_number = $7,
+                total_amount = $8,
+                status = $9,
+                raw_tally_data = $10,
+                customer_id = $11,
+                organization_id = $11,
+                updated_at = NOW()
+              WHERE id = $1
+                AND tenant_id = $2
+              `,
+              [
+                orderId,
+                input.tenantId,
+                tallyGuid,
+                voucherNo,
+                voucherDate,
+                partyName,
+                referenceNumber,
+                totalAmount,
+                status,
+                JSON.stringify(row),
+                organizationId,
+              ],
+            );
+          }
+        } else {
+          if (isPO) {
             const orderResult = await client.query(
               `
-              INSERT INTO ${headerTable}
+              INSERT INTO purchase_orders
               (
                 tenant_id,
-                ${orderNumberColumn},
-                ${dateColumn},
-                ${partyColumn},
-                party_name,
+                tally_guid,
+                voucher_number,
+                voucher_date,
+                po_date,
+                supplier_name,
                 reference_number,
-                reference_date,
-                narration,
                 total_amount,
                 status,
-                source,
-                created_by,
-                updated_by,
+                raw_tally_data,
                 created_at,
                 updated_at
               )
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'tally',$11,$11,NOW(),NOW())
+              VALUES
+              (
+                $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,NOW(),NOW()
+              )
               RETURNING id
               `,
               [
                 input.tenantId,
+                tallyGuid,
                 voucherNo,
-                orderDate,
-                organizationId,
+                voucherDate,
                 partyName,
                 referenceNumber,
-                referenceDate,
-                narration,
                 totalAmount,
                 status,
-                input.userId || null,
+                JSON.stringify(row),
+              ],
+            );
+
+            orderId = orderResult.rows[0].id;
+          } else {
+            const orderResult = await client.query(
+              `
+              INSERT INTO sales_orders
+              (
+                tenant_id,
+                tally_guid,
+                voucher_number,
+                voucher_date,
+                so_date,
+                customer_name,
+                reference_number,
+                total_amount,
+                status,
+                raw_tally_data,
+                customer_id,
+                organization_id,
+                created_at,
+                updated_at
+              )
+              VALUES
+              (
+                $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$10,NOW(),NOW()
+              )
+              RETURNING id
+              `,
+              [
+                input.tenantId,
+                tallyGuid,
+                voucherNo,
+                voucherDate,
+                partyName,
+                referenceNumber,
+                totalAmount,
+                status,
+                JSON.stringify(row),
+                organizationId,
               ],
             );
 
@@ -1955,11 +2027,15 @@ async function pullTallyVouchers(input: {
           }
         }
 
+        if (!orderId) {
+          throw new Error("Order id was not created");
+        }
+
         await client.query(
           `
           DELETE FROM ${itemTable}
           WHERE tenant_id = $1
-            AND ${isPO ? "purchase_order_id" : "sales_order_id"} = $2
+            AND ${orderFkColumn} = $2
           `,
           [input.tenantId, orderId],
         );
@@ -1985,7 +2061,7 @@ async function pullTallyVouchers(input: {
             INSERT INTO ${itemTable}
             (
               tenant_id,
-              ${isPO ? "purchase_order_id" : "sales_order_id"},
+              ${orderFkColumn},
               product_id,
               item_name,
               description,
@@ -2018,7 +2094,7 @@ async function pullTallyVouchers(input: {
           tenantId: input.tenantId,
           entityType: input.entityType,
           crmEntityId: orderId,
-          tallyGuid: row.guid,
+          tallyGuid,
           tallyMasterId: row.masterId,
           tallyAlterId: row.alterId,
           tallyName: voucherNo,
@@ -2033,9 +2109,8 @@ async function pullTallyVouchers(input: {
           jobId: job.id,
           entityType: input.entityType,
           tallyGuid: row.guid || null,
-          tallyName: row.voucherNumber || row.number || null,
-          errorMessage:
-            error?.message || `Unknown ${input.entityType} sync error`,
+          tallyName: row.voucherNumber || row.number || row.partyName || null,
+          errorMessage: error?.message || "Unknown voucher sync error",
           rawPayload: row,
         });
       }
@@ -2073,7 +2148,7 @@ async function pullTallyVouchers(input: {
       totalRecords: input.records.length,
       successCount,
       failedCount,
-      errorMessage: error?.message || `${input.entityType} sync failed`,
+      errorMessage: error?.message || "Voucher sync failed",
     });
 
     throw error;
@@ -2325,12 +2400,15 @@ export async function pullTallyPurchaseOrdersHandler(
   try {
     const tenantId = getTenantIdFromReq(req);
     const userId = getUserIdFromReq(req);
-    const body = PullPurchaseOrdersSchema.parse(req.body);
+
+    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+
+    console.log("[PURCHASE ORDER RAW BODY SAMPLE]", records.slice(0, 1));
 
     const data = await pullTallyPurchaseOrders({
       tenantId,
       userId,
-      records: body.records,
+      records,
     });
 
     res.json({
@@ -2350,12 +2428,15 @@ export async function pullTallySalesOrdersHandler(
   try {
     const tenantId = getTenantIdFromReq(req);
     const userId = getUserIdFromReq(req);
-    const body = PullSalesOrdersSchema.parse(req.body);
+
+    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+
+    console.log("[SALES ORDER RAW BODY SAMPLE]", records.slice(0, 1));
 
     const data = await pullTallySalesOrders({
       tenantId,
       userId,
-      records: body.records,
+      records,
     });
 
     res.json({

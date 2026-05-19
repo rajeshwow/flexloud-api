@@ -115,7 +115,7 @@ const BaseOrganizationSchema = z
       .optional()
       .nullable(),
 
-    branches: z.array(BranchSchema).min(1, "At least one branch is required"),
+    branches: z.array(BranchSchema).optional().default([]),
   })
   .superRefine((data, ctx) => {
     const headOfficeCount = data.branches.filter(
@@ -129,6 +129,7 @@ const BaseOrganizationSchema = z
         path: ["branches"],
       });
     }
+    if (!data.branches?.length) return;
 
     if (headOfficeCount === 0) {
       ctx.addIssue({
