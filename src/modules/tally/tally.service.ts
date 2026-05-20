@@ -1,3 +1,4 @@
+import axios from "axios";
 import type { NextFunction, Request, Response } from "express";
 import { pool } from "../../db/pool";
 import {
@@ -281,7 +282,7 @@ async function resolveCostCenterId(
         updated_at = now()
       RETURNING id
       `,
-      [tenantId, name, name],
+      [tenantId, guid || null, name],
     );
 
     return created.rows[0]?.id || null;
@@ -456,30 +457,72 @@ async function createJob(input: {
 
 async function finishJob(input: {
   jobId: string;
+  tenantId: string;
+  connectionId?: string | null;
   status: "success" | "failed" | "partial";
   totalRecords: number;
   successCount: number;
   failedCount: number;
   errorMessage?: string | null;
 }) {
+  const completedAt = new Date();
+
   await pool.query(
     `
     UPDATE tally_sync_jobs
-    SET status = $2,
-        finished_at = NOW(),
-        total_records = $3,
-        success_count = $4,
-        failed_count = $5,
-        error_message = $6
+    SET
+      status = $2,
+      finished_at = $3,
+      completed_at = $3,
+      total_records = $4,
+      success_count = $5,
+      failed_count = $6,
+      error_message = $7
     WHERE id = $1
+      AND tenant_id = $8
     `,
     [
       input.jobId,
       input.status,
+      completedAt,
       input.totalRecords,
       input.successCount,
       input.failedCount,
       input.errorMessage || null,
+      input.tenantId,
+    ],
+  );
+
+  await pool.query(
+    `
+    UPDATE tally_connections
+    SET
+      last_sync_at = $2,
+      last_synced_at = CASE
+        WHEN $3 IN ('success', 'partial') THEN $2
+        ELSE last_synced_at
+      END,
+      last_success_at = CASE
+        WHEN $3 IN ('success', 'partial') THEN $2
+        ELSE last_success_at
+      END,
+      last_error = CASE
+        WHEN $3 = 'failed' THEN $4
+        WHEN $5 > 0 THEN $4
+        ELSE NULL
+      END,
+      updated_at = now()
+    WHERE tenant_id = $1
+      AND ($6::uuid IS NULL OR id = $6::uuid)
+    `,
+    [
+      input.tenantId,
+      completedAt,
+      input.status,
+      input.errorMessage ||
+        (input.failedCount ? `${input.failedCount} records failed` : null),
+      input.failedCount,
+      input.connectionId || null,
     ],
   );
 }
@@ -515,30 +558,6 @@ async function logSyncError(input: {
       input.tallyName || null,
       input.errorMessage,
       input.rawPayload ? JSON.stringify(input.rawPayload) : null,
-    ],
-  );
-}
-
-async function updateConnectionSyncStatus(input: {
-  tenantId: string;
-  failedCount: number;
-  errorLabel: string;
-}) {
-  await pool.query(
-    `
-    UPDATE tally_connections
-    SET last_sync_at = NOW(),
-        last_success_at = CASE WHEN $2 = 0 THEN NOW() ELSE last_success_at END,
-        last_error = CASE WHEN $2 = 0 THEN NULL ELSE $3 END,
-        updated_at = NOW()
-    WHERE tenant_id = $1
-    `,
-    [
-      input.tenantId,
-      input.failedCount,
-      input.failedCount
-        ? `${input.failedCount} ${input.errorLabel} failed`
-        : null,
     ],
   );
 }
@@ -981,11 +1000,11 @@ export async function pullTallyLedgers(input: {
       }
     }
 
-    await updateConnectionSyncStatus({
-      tenantId: input.tenantId,
-      failedCount,
-      errorLabel: "ledger records",
-    });
+    // await updateConnectionSyncStatus({
+    //   tenantId: input.tenantId,
+    //   failedCount,
+    //   errorLabel: "ledger records",
+    // });
 
     await finishJob({
       jobId: job.id,
@@ -994,6 +1013,8 @@ export async function pullTallyLedgers(input: {
       totalRecords: input.records.length,
       successCount,
       failedCount,
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     await client.query("COMMIT");
@@ -1014,6 +1035,8 @@ export async function pullTallyLedgers(input: {
       successCount,
       failedCount,
       errorMessage: error?.message || "Ledger sync failed",
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     throw error;
@@ -1091,73 +1114,131 @@ export async function pullTallyOutstandings(input: {
           ].join("::");
         }
 
-        await client.query(
+        const existingOutstanding = await client.query(
           `
-       INSERT INTO tally_outstandings
-      (
-        tenant_id,
-        tally_guid,
-        ledger_guid,
-        ledger_name,
-        voucher_guid,
-        voucher_number,
-        voucher_type,
-        voucher_date,
-        due_date,
-        bill_ref,
-        bill_type,
-        bill_amount,
-        pending_amount,
-        synced_at,
-        cost_center_guid,
-        cost_center_name,
-        cost_center_id,
-        cost_category,
-        cost_center_amount
-      )
-      VALUES
-      (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),$14,$15,$16,$17,$18
-      )
-      ON CONFLICT (tenant_id, ledger_guid, bill_ref, voucher_number)
-      DO UPDATE SET
-        tally_guid = EXCLUDED.tally_guid,
-        ledger_name = EXCLUDED.ledger_name,
-        voucher_guid = EXCLUDED.voucher_guid,
-        voucher_type = EXCLUDED.voucher_type,
-        voucher_date = EXCLUDED.voucher_date,
-        due_date = EXCLUDED.due_date,
-        bill_type = EXCLUDED.bill_type,
-        bill_amount = EXCLUDED.bill_amount,
-        pending_amount = EXCLUDED.pending_amount,
-        synced_at = NOW(),
-        cost_center_guid = EXCLUDED.cost_center_guid,
-        cost_center_name = EXCLUDED.cost_center_name,
-        cost_center_id = EXCLUDED.cost_center_id,
-        cost_category = EXCLUDED.cost_category,
-        cost_center_amount = EXCLUDED.cost_center_amount
-      `,
+  SELECT id
+  FROM tally_outstandings
+  WHERE tenant_id = $1
+    AND COALESCE(NULLIF(ledger_guid, ''), 'NO_LEDGER_GUID')
+        = COALESCE(NULLIF($2, ''), 'NO_LEDGER_GUID')
+    AND lower(trim(COALESCE(ledger_name, '')))
+        = lower(trim(COALESCE($3, '')))
+    AND COALESCE(NULLIF(bill_ref, ''), 'NO_BILL_REF')
+        = COALESCE(NULLIF($4, ''), 'NO_BILL_REF')
+    AND COALESCE(NULLIF(voucher_number, ''), 'NO_VOUCHER_NUMBER')
+        = COALESCE(NULLIF($5, ''), 'NO_VOUCHER_NUMBER')
+  LIMIT 1
+  FOR UPDATE
+  `,
           [
             input.tenantId,
-            mapped.tally_guid,
             mapped.ledger_guid,
             mapped.ledger_name,
-            mapped.voucher_guid,
-            mapped.voucher_number,
-            mapped.voucher_type,
-            mapped.voucher_date,
-            mapped.due_date,
             mapped.bill_ref,
-            mapped.bill_type,
-            mapped.bill_amount,
-            mapped.pending_amount,
-            mapped.cost_center_guid,
-            mapped.cost_center_name,
-            costCenterId,
-            mapped.cost_category,
-            mapped.cost_center_amount,
+            mapped.voucher_number,
           ],
         );
+
+        if (existingOutstanding.rowCount) {
+          await client.query(
+            `
+    UPDATE tally_outstandings
+    SET
+      tally_guid = $3,
+      ledger_guid = $4,
+      ledger_name = $5,
+      voucher_guid = $6,
+      voucher_number = $7,
+      voucher_type = $8,
+      voucher_date = $9,
+      due_date = $10,
+      bill_ref = $11,
+      bill_type = $12,
+      bill_amount = $13,
+      pending_amount = $14,
+      synced_at = NOW(),
+      cost_center_guid = $15,
+      cost_center_name = $16,
+      cost_center_id = $17,
+      cost_category = $18,
+      cost_center_amount = $19
+    WHERE id = $1
+      AND tenant_id = $2
+    `,
+            [
+              existingOutstanding.rows[0].id,
+              input.tenantId,
+              mapped.tally_guid,
+              mapped.ledger_guid,
+              mapped.ledger_name,
+              mapped.voucher_guid,
+              mapped.voucher_number,
+              mapped.voucher_type,
+              mapped.voucher_date,
+              mapped.due_date,
+              mapped.bill_ref,
+              mapped.bill_type,
+              mapped.bill_amount,
+              mapped.pending_amount,
+              mapped.cost_center_guid,
+              mapped.cost_center_name,
+              costCenterId,
+              mapped.cost_category,
+              mapped.cost_center_amount,
+            ],
+          );
+        } else {
+          await client.query(
+            `
+    INSERT INTO tally_outstandings
+    (
+      tenant_id,
+      tally_guid,
+      ledger_guid,
+      ledger_name,
+      voucher_guid,
+      voucher_number,
+      voucher_type,
+      voucher_date,
+      due_date,
+      bill_ref,
+      bill_type,
+      bill_amount,
+      pending_amount,
+      synced_at,
+      cost_center_guid,
+      cost_center_name,
+      cost_center_id,
+      cost_category,
+      cost_center_amount
+    )
+    VALUES
+    (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),$14,$15,$16,$17,$18
+    )
+    `,
+            [
+              input.tenantId,
+              mapped.tally_guid,
+              mapped.ledger_guid,
+              mapped.ledger_name,
+              mapped.voucher_guid,
+              mapped.voucher_number,
+              mapped.voucher_type,
+              mapped.voucher_date,
+              mapped.due_date,
+              mapped.bill_ref,
+              mapped.bill_type,
+              mapped.bill_amount,
+              mapped.pending_amount,
+              mapped.cost_center_guid,
+              mapped.cost_center_name,
+              costCenterId,
+              mapped.cost_category,
+              mapped.cost_center_amount,
+            ],
+          );
+        }
 
         successCount++;
       } catch (error: any) {
@@ -1183,11 +1264,11 @@ export async function pullTallyOutstandings(input: {
       }
     }
 
-    await updateConnectionSyncStatus({
-      tenantId: input.tenantId,
-      failedCount,
-      errorLabel: "outstanding records",
-    });
+    // await updateConnectionSyncStatus({
+    //   tenantId: input.tenantId,
+    //   failedCount,
+    //   errorLabel: "outstanding records",
+    // });
 
     await finishJob({
       jobId: job.id,
@@ -1196,6 +1277,8 @@ export async function pullTallyOutstandings(input: {
       totalRecords: input.records.length,
       successCount,
       failedCount,
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     await client.query("COMMIT");
@@ -1216,6 +1299,8 @@ export async function pullTallyOutstandings(input: {
       successCount,
       failedCount,
       errorMessage: error?.message || "Outstanding sync failed",
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     throw error;
@@ -1552,11 +1637,11 @@ export async function pullTallyEmployees(input: {
       }
     }
 
-    await updateConnectionSyncStatus({
-      tenantId: input.tenantId,
-      failedCount,
-      errorLabel: "employee records",
-    });
+    // await updateConnectionSyncStatus({
+    //   tenantId: input.tenantId,
+    //   failedCount,
+    //   errorLabel: "employee records",
+    // });
 
     await finishJob({
       jobId: job.id,
@@ -1565,6 +1650,8 @@ export async function pullTallyEmployees(input: {
       totalRecords: input.records.length,
       successCount,
       failedCount,
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     await client.query("COMMIT");
@@ -1585,6 +1672,8 @@ export async function pullTallyEmployees(input: {
       successCount,
       failedCount,
       errorMessage: error?.message || "Employee sync failed",
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     throw error;
@@ -1871,11 +1960,11 @@ export async function pullTallyStockItems(input: {
       }
     }
 
-    await updateConnectionSyncStatus({
-      tenantId: input.tenantId,
-      failedCount,
-      errorLabel: "stock item records",
-    });
+    // await updateConnectionSyncStatus({
+    //   tenantId: input.tenantId,
+    //   failedCount,
+    //   errorLabel: "stock item records",
+    // });
 
     await finishJob({
       jobId: job.id,
@@ -1884,6 +1973,8 @@ export async function pullTallyStockItems(input: {
       totalRecords: input.records.length,
       successCount,
       failedCount,
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     await client.query("COMMIT");
@@ -1904,6 +1995,8 @@ export async function pullTallyStockItems(input: {
       successCount,
       failedCount,
       errorMessage: error?.message || "Stock item sync failed",
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     throw error;
@@ -2317,11 +2410,11 @@ async function pullTallyVouchers(input: {
       }
     }
 
-    await updateConnectionSyncStatus({
-      tenantId: input.tenantId,
-      failedCount,
-      errorLabel: `${input.entityType} records`,
-    });
+    // await updateConnectionSyncStatus({
+    //   tenantId: input.tenantId,
+    //   failedCount,
+    //   errorLabel: `${input.entityType} records`,
+    // });
 
     await finishJob({
       jobId: job.id,
@@ -2330,6 +2423,8 @@ async function pullTallyVouchers(input: {
       totalRecords: input.records.length,
       successCount,
       failedCount,
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     await client.query("COMMIT");
@@ -2350,6 +2445,8 @@ async function pullTallyVouchers(input: {
       successCount,
       failedCount,
       errorMessage: error?.message || "Voucher sync failed",
+      tenantId: input.tenantId,
+      connectionId: connection?.id || null,
     });
 
     throw error;
@@ -2426,14 +2523,40 @@ export async function getTallySyncErrors(input: {
 /* ----------------------------- HANDLERS ----------------------------- */
 
 export async function getTallyConnectionHandler(
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction,
 ) {
   try {
-    const tenantId = getTenantIdFromReq(req);
-    const data = await getTallyConnection(tenantId);
-    res.json({ data });
+    const tenantId = req.tenantId;
+
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id,
+        tenant_id,
+        company_name,
+        company_guid,
+        tally_url,
+        direction,
+        frequency_minutes,
+        is_active,
+        last_synced_at,
+        last_company_checked_at,
+        created_at,
+        updated_at
+      FROM tally_connections
+      WHERE tenant_id = $1
+      LIMIT 1
+      `,
+      [tenantId],
+    );
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Tally connection fetched successfully",
+      data: rows[0] || null,
+    });
   } catch (error) {
     next(error);
   }
@@ -2458,6 +2581,149 @@ export async function saveTallyConnectionHandler(
     res.json({
       message: "Tally connection saved successfully",
       data,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateTallyRunningCompanyHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+
+    const companyName = cleanText(req.body?.company_name);
+    const companyGuid = cleanText(req.body?.company_guid);
+    const tallyUrl = cleanText(req.body?.tally_url) || "http://localhost:9000";
+
+    if (!companyName) {
+      return sendTallyResponse(res, 400, "company_name is required", null);
+    }
+
+    const { rows } = await pool.query(
+      `
+      INSERT INTO tally_connections
+      (
+        tenant_id,
+        company_name,
+        company_guid,
+        tally_url,
+        sync_direction,
+        sync_frequency_minutes,
+        is_active,
+        last_company_checked_at,
+        created_at,
+        updated_at
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        $3,
+        $4,
+        'pull',
+        10,
+        true,
+        now(),
+        now(),
+        now()
+      )
+      ON CONFLICT (tenant_id)
+      DO UPDATE SET
+        company_name = EXCLUDED.company_name,
+        company_guid = EXCLUDED.company_guid,
+        tally_url = COALESCE(EXCLUDED.tally_url, tally_connections.tally_url),
+        last_company_checked_at = now(),
+        updated_at = now()
+      RETURNING *
+      `,
+      [tenantId, companyName, companyGuid, tallyUrl],
+    );
+
+    return sendTallyResponse(
+      res,
+      200,
+      "Tally running company updated successfully",
+      rows[0],
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function upsertTallyConnectionHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.tenantId;
+    const userId = req.user?.id || null;
+
+    const body = UpsertTallyConnectionSchema.parse(req.body);
+
+    const { rows } = await pool.query(
+      `
+      INSERT INTO tally_connections (
+        tenant_id,
+        company_name,
+        company_guid,
+        tally_url,
+        direction,
+        frequency_minutes,
+        is_active,
+        last_company_checked_at,
+        created_by,
+        updated_by,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        now(),
+        $8,
+        $8,
+        now(),
+        now()
+      )
+      ON CONFLICT (tenant_id)
+      DO UPDATE SET
+        company_name = COALESCE(EXCLUDED.company_name, tally_connections.company_name),
+        company_guid = COALESCE(EXCLUDED.company_guid, tally_connections.company_guid),
+        tally_url = COALESCE(EXCLUDED.tally_url, tally_connections.tally_url),
+        direction = COALESCE(EXCLUDED.direction, tally_connections.direction),
+        frequency_minutes = COALESCE(EXCLUDED.frequency_minutes, tally_connections.frequency_minutes),
+        is_active = COALESCE(EXCLUDED.is_active, tally_connections.is_active),
+        last_company_checked_at = now(),
+        updated_by = EXCLUDED.updated_by,
+        updated_at = now()
+      RETURNING *
+      `,
+      [
+        tenantId,
+        body.company_name || null,
+        body.company_guid || null,
+        body.tally_url || "http://localhost:9000",
+        body.direction || "pull",
+        body.frequency_minutes || 10,
+        body.is_active ?? true,
+        userId,
+      ],
+    );
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Tally connection updated successfully",
+      data: rows[0],
     });
   } catch (error) {
     next(error);
@@ -2780,6 +3046,257 @@ export async function getTallySyncErrorsHandler(
     });
 
     res.json({ data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+function sendTallyResponse(
+  res: Response,
+  statusCode: number,
+  message: string,
+  data: any = null,
+) {
+  return res.status(statusCode).json({
+    statusCode,
+    message,
+    data,
+  });
+}
+
+export async function getTallySyncStatusHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+
+    const [connectionResult, lastSyncResult, lastErrorsResult] =
+      await Promise.all([
+        pool.query(
+          `
+          SELECT
+            id,
+            company_name,
+            tally_url,
+            sync_direction,
+            sync_frequency_minutes,
+            is_active,
+            last_synced_at,
+            created_at,
+            updated_at
+          FROM tally_connections
+          WHERE tenant_id = $1
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC
+          LIMIT 1
+          `,
+          [tenantId],
+        ),
+
+        pool.query(
+          `
+  WITH recent_jobs AS (
+    SELECT
+      id,
+      connection_id,
+      sync_type,
+      direction,
+      status,
+      COALESCE(total_records, 0) AS total_records,
+      COALESCE(success_count, 0) AS success_count,
+      COALESCE(failed_count, 0) AS failed_count,
+      started_at,
+      completed_at,
+      created_at
+    FROM tally_sync_jobs
+    WHERE tenant_id = $1
+      AND created_at >= (
+        SELECT COALESCE(MAX(created_at), now())
+        FROM tally_sync_jobs
+        WHERE tenant_id = $1
+      ) - INTERVAL '30 minutes'
+    ORDER BY created_at DESC
+  )
+  SELECT
+    'full_sync' AS sync_type,
+    'pull' AS direction,
+    CASE
+      WHEN COUNT(*) = 0 THEN 'no_sync'
+      WHEN COUNT(*) FILTER (WHERE status = 'failed') > 0 THEN 'partial_failed'
+      WHEN COUNT(*) FILTER (WHERE status = 'running') > 0 THEN 'running'
+      ELSE 'success'
+    END AS status,
+    COALESCE(SUM(total_records), 0) AS total_records,
+    COALESCE(SUM(success_count), 0) AS success_count,
+    COALESCE(SUM(failed_count), 0) AS failed_count,
+    MAX(COALESCE(started_at, created_at)) AS started_at,
+    MAX(COALESCE(completed_at, created_at)) AS completed_at,
+    MAX(created_at) AS created_at,
+    json_agg(
+      json_build_object(
+        'id', id,
+        'sync_type', sync_type,
+        'direction', direction,
+        'status', status,
+        'total_records', total_records,
+        'success_count', success_count,
+        'failed_count', failed_count,
+        'started_at', started_at,
+        'completed_at', completed_at,
+        'created_at', created_at
+      )
+      ORDER BY created_at DESC
+    ) FILTER (WHERE id IS NOT NULL) AS jobs
+  FROM recent_jobs
+  `,
+          [tenantId],
+        ),
+
+        pool.query(
+          `
+          SELECT
+            id,
+            job_id,
+            entity_type,
+            tally_guid,
+            tally_name,
+            error_message,
+            created_at
+          FROM tally_sync_errors
+          WHERE tenant_id = $1
+          ORDER BY created_at DESC
+          LIMIT 5
+          `,
+          [tenantId],
+        ),
+      ]);
+
+    const lastSync = lastSyncResult.rows[0] || null;
+
+    if (lastSync?.completed_at && lastSync.status === "success") {
+      await pool.query(
+        `
+    UPDATE tally_connections
+    SET
+      last_synced_at = $2,
+      updated_at = now()
+    WHERE tenant_id = $1
+    `,
+        [tenantId, lastSync.completed_at],
+      );
+    }
+
+    return sendTallyResponse(res, 200, "Tally sync status fetched", {
+      connection: {
+        ...(connectionResult.rows[0] || {}),
+        last_synced_at:
+          connectionResult.rows[0]?.last_synced_at ||
+          lastSync?.completed_at ||
+          null,
+      },
+      last_sync: lastSync,
+      recent_errors: lastErrorsResult.rows || [],
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function checkTallyConnectionHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    getTenantIdFromReq(req);
+
+    const agentUrl = process.env.TALLY_AGENT_URL;
+    const controlToken = process.env.TALLY_AGENT_TOKEN;
+
+    if (!agentUrl || !controlToken) {
+      return sendTallyResponse(
+        res,
+        500,
+        "TALLY_AGENT_URL or TALLY_AGENT_TOKEN is missing in backend",
+        {
+          reachable: false,
+        },
+      );
+    }
+
+    try {
+      const response = await axios.get(`${agentUrl}/health`, {
+        timeout: 10000,
+        headers: {
+          Authorization: `Bearer ${controlToken}`,
+        },
+      });
+
+      return sendTallyResponse(res, 200, "Tally agent connection successful", {
+        reachable: true,
+        agent: response.data,
+      });
+    } catch (error: any) {
+      return sendTallyResponse(res, 200, "Tally agent connection failed", {
+        reachable: false,
+        error:
+          error?.response?.data?.message ||
+          error?.message ||
+          "Unable to reach Tally sync agent",
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function runTallyManualSyncHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    getTenantIdFromReq(req);
+
+    const agentUrl = process.env.TALLY_AGENT_URL;
+    const controlToken = process.env.TALLY_AGENT_TOKEN;
+
+    if (!agentUrl || !controlToken) {
+      return sendTallyResponse(
+        res,
+        500,
+        "TALLY_AGENT_URL or TALLY_AGENT_TOKEN is missing in backend",
+        null,
+      );
+    }
+
+    try {
+      const response = await axios.post(
+        `${agentUrl}/sync/run`,
+        {
+          reason: "manual_frontend_trigger",
+        },
+        {
+          timeout: 15000,
+          headers: {
+            Authorization: `Bearer ${controlToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      return sendTallyResponse(res, 200, "Tally sync started", response.data);
+    } catch (error: any) {
+      return sendTallyResponse(
+        res,
+        error?.response?.status || 500,
+        error?.response?.data?.message || "Unable to start Tally sync",
+        error?.response?.data || {
+          message: error?.message,
+        },
+      );
+    }
   } catch (error) {
     next(error);
   }

@@ -2,19 +2,33 @@ import { NextFunction, Response } from "express";
 import { pool } from "../db/pool";
 import { getTenantId } from "./tenant";
 
+function resolvePermissionUserId(req: any) {
+  return (
+    req.user?.sub ||
+    req.user?.id ||
+    req.user?.user_id ||
+    req.user?.userId ||
+    req.auth?.sub ||
+    req.auth?.id ||
+    req.userId ||
+    null
+  );
+}
+
 export function requirePermissions(
   required: string[],
   mode: "ANY" | "ALL" = "ANY",
 ) {
   return async function (req: any, res: Response, next: NextFunction) {
     try {
-      const tenantId = getTenantId(req);
-      const userId = req.user?.sub;
+      const tenantId = getTenantId(req) || req.tenant?.id || req.tenantId;
+      const userId = resolvePermissionUserId(req);
 
       if (!tenantId || !userId) {
         return res.status(401).json({
           statusCode: 401,
           message: "Unauthorized",
+          data: null,
         });
       }
 
@@ -50,13 +64,15 @@ export function requirePermissions(
         return res.status(403).json({
           statusCode: 403,
           message: "Forbidden",
-          requiredPermissions: required,
+          data: {
+            requiredPermissions: required,
+          },
         });
       }
 
-      next();
+      return next();
     } catch (error) {
-      next(error);
+      return next(error);
     }
   };
 }

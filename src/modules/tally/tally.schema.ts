@@ -13,6 +13,10 @@ const OptionalRecordsSchema = <T extends z.ZodTypeAny>(schema: T) =>
 export const UpsertTallyConnectionSchema = z.object({
   company_name: z.string().trim().optional(),
 
+  company_guid: z.string().nullable().optional(),
+  direction: z.enum(["pull", "push"]).optional(),
+  frequency_minutes: z.number().int().positive().optional(),
+
   // frontend/body me agar base_url aa raha ho to service me map kar sakte ho,
   // schema level par tally_url primary rakha hai
   tally_url: z.string().trim().default("http://localhost:9000"),
