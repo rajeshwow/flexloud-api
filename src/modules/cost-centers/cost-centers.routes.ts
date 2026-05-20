@@ -3,6 +3,9 @@ import { requirePermissions } from "../../common/requirePermissions";
 import {
   getCostCenterOrganizationsHandler,
   getCostCenterOutstandingsHandler,
+  getCostCenterPerformanceFiltersHandler,
+  getCostCenterPerformanceHandler,
+  getCostCenterPerformanceLedgersHandler,
   getCostCentersHandler,
   getCostCenterSummaryHandler,
 } from "./cost-centers.service";
@@ -33,4 +36,21 @@ costCentersRouter.get(
   getCostCenterOrganizationsHandler,
 );
 
+costCentersRouter.get(
+  "/performance",
+  requirePermissions(["cost-centers.analytics"]),
+  getCostCenterPerformanceHandler,
+);
+
+costCentersRouter.get(
+  "/performance/filters",
+  requirePermissions(["cost-centers.analytics"]),
+  getCostCenterPerformanceFiltersHandler,
+);
+
+costCentersRouter.get(
+  "/:id/performance-ledgers",
+  requirePermissions(["cost-centers.analytics"]),
+  getCostCenterPerformanceLedgersHandler,
+);
 export default costCentersRouter;

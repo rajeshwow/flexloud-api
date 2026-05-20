@@ -341,3 +341,324 @@ export async function getCostCenterOrganizationsHandler(
     next(error);
   }
 }
+
+function toSafeNumber(value: any) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function cleanLikeValue(value?: string) {
+  return String(value || "").trim();
+}
+
+export async function getCostCenterPerformanceHandler(req: any, res: Response) {
+  const tenantId = req.user?.tenant_id || req.tenant?.id;
+
+  const {
+    cost_center_id,
+    ledger_name,
+    min_amount,
+    max_amount,
+    start_date,
+    end_date,
+  } = req.query;
+
+  const params: any[] = [tenantId];
+
+  const filters: string[] = [
+    `tenant_id = $1`,
+    `COALESCE(cost_center_id::text, cost_center_name, '') <> ''`,
+  ];
+
+  if (cost_center_id) {
+    params.push(cost_center_id);
+    filters.push(`cost_center_id::text = $${params.length}`);
+  }
+
+  if (ledger_name) {
+    params.push(`%${ledger_name}%`);
+    filters.push(`ledger_name ILIKE $${params.length}`);
+  }
+
+  filters.push(...buildDateFilter({ start_date, end_date }, params));
+
+  const havingFilters: string[] = [];
+
+  if (min_amount) {
+    params.push(Number(min_amount));
+    havingFilters.push(`
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) >= $${params.length}
+    `);
+  }
+
+  if (max_amount) {
+    params.push(Number(max_amount));
+    havingFilters.push(`
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) <= $${params.length}
+    `);
+  }
+
+  const sql = `
+    SELECT
+      COALESCE(cost_center_id::text, cost_center_name) AS id,
+      MAX(cost_center_id::text) AS cost_center_id,
+      cost_center_name,
+
+      COUNT(DISTINCT ledger_name) AS ledger_count,
+      COUNT(*) AS bill_count,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) AS total_business,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) AS total_purchase,
+
+      SUM(ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))) AS total_activity,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(pending_amount, 0))
+          ELSE 0
+        END
+      ) AS receivable,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
+          THEN ABS(COALESCE(pending_amount, 0))
+          ELSE 0
+        END
+      ) AS payable,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
+          THEN -ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) AS net_business,
+
+      MAX(synced_at) AS last_synced_at
+
+    FROM tally_outstandings
+    WHERE ${filters.join(" AND ")}
+    GROUP BY COALESCE(cost_center_id::text, cost_center_name), cost_center_name
+    ${havingFilters.length ? `HAVING ${havingFilters.join(" AND ")}` : ""}
+    ORDER BY total_business DESC, cost_center_name ASC
+  `;
+
+  const { rows } = await pool.query(sql, params);
+
+  return res.json({
+    statusCode: 200,
+    message: "Cost center performance fetched successfully",
+    data: rows.map((row) => ({
+      id: row.id,
+      cost_center_id: row.cost_center_id,
+      cost_center_name: row.cost_center_name,
+      ledger_count: toNumber(row.ledger_count),
+      bill_count: toNumber(row.bill_count),
+      total_business: toNumber(row.total_business),
+      total_purchase: toNumber(row.total_purchase),
+      total_activity: toNumber(row.total_activity),
+      receivable: toNumber(row.receivable),
+      payable: toNumber(row.payable),
+      net_business: toNumber(row.net_business),
+      last_synced_at: row.last_synced_at,
+    })),
+  });
+}
+
+export async function getCostCenterPerformanceFiltersHandler(
+  req: any,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = req.tenant?.id || req.tenantId;
+
+    const [costCentersResult, ledgersResult] = await Promise.all([
+      pool.query(
+        `
+        SELECT DISTINCT
+          COALESCE(tout.cost_center_id, cc.id) AS id,
+          COALESCE(NULLIF(TRIM(tout.cost_center_name), ''), cc.name) AS name
+        FROM tally_outstandings tout
+        LEFT JOIN cost_centers cc
+          ON cc.tenant_id = tout.tenant_id
+         AND (
+            cc.id = tout.cost_center_id
+            OR LOWER(TRIM(cc.name)) = LOWER(TRIM(tout.cost_center_name))
+         )
+        WHERE tout.tenant_id = $1
+          AND COALESCE(NULLIF(TRIM(tout.cost_center_name), ''), cc.name) IS NOT NULL
+        ORDER BY name ASC
+        LIMIT 500
+        `,
+        [tenantId],
+      ),
+
+      pool.query(
+        `
+        SELECT DISTINCT ledger_name AS name
+        FROM tally_outstandings
+        WHERE tenant_id = $1
+          AND COALESCE(NULLIF(TRIM(ledger_name), ''), '') <> ''
+        ORDER BY ledger_name ASC
+        LIMIT 500
+        `,
+        [tenantId],
+      ),
+    ]);
+
+    res.json({
+      statusCode: 200,
+      message: "Cost center performance filters fetched successfully",
+      data: {
+        cost_centers: costCentersResult.rows,
+        ledgers: ledgersResult.rows,
+        bill_types: [
+          { label: "Receivable", value: "receivable" },
+          { label: "Payable", value: "payable" },
+        ],
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+function toNumber(value: any) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function buildDateFilter(query: any, params: any[]) {
+  const filters: string[] = [];
+
+  if (query.start_date) {
+    params.push(query.start_date);
+    filters.push(`voucher_date >= $${params.length}`);
+  }
+
+  if (query.end_date) {
+    params.push(query.end_date);
+    filters.push(`voucher_date <= $${params.length}`);
+  }
+
+  return filters;
+}
+
+export async function getCostCenterPerformanceLedgersHandler(
+  req: any,
+  res: Response,
+) {
+  const tenantId = req.user?.tenant_id || req.tenant?.id;
+  const { id } = req.params;
+
+  const { start_date, end_date } = req.query;
+
+  const params: any[] = [tenantId, id];
+
+  const filters: string[] = [
+    `tenant_id = $1`,
+    `COALESCE(cost_center_id::text, cost_center_name) = $2`,
+  ];
+
+  filters.push(...buildDateFilter({ start_date, end_date }, params));
+
+  const sql = `
+    SELECT
+      ledger_name,
+
+      COUNT(*) AS bill_count,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) AS total_business,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) AS total_purchase,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(pending_amount, 0))
+          ELSE 0
+        END
+      ) AS receivable,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
+          THEN ABS(COALESCE(pending_amount, 0))
+          ELSE 0
+        END
+      ) AS payable,
+
+      SUM(
+        CASE 
+          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
+          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
+          THEN -ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
+          ELSE 0
+        END
+      ) AS net_business
+
+    FROM tally_outstandings
+    WHERE ${filters.join(" AND ")}
+    GROUP BY ledger_name
+    ORDER BY total_business DESC, ledger_name ASC
+  `;
+
+  const { rows } = await pool.query(sql, params);
+
+  return res.json({
+    statusCode: 200,
+    message: "Cost center ledger performance fetched successfully",
+    data: rows.map((row) => ({
+      ledger_name: row.ledger_name,
+      bill_count: toNumber(row.bill_count),
+      total_business: toNumber(row.total_business),
+      total_purchase: toNumber(row.total_purchase),
+      receivable: toNumber(row.receivable),
+      payable: toNumber(row.payable),
+      net_business: toNumber(row.net_business),
+    })),
+  });
+}
