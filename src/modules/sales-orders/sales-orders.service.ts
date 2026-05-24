@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { getUserIdFromRequest } from "../../common/tallyAccess";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 import {
@@ -139,61 +140,119 @@ const generateSalesOrderNumber = async (client: any) => {
   return result.rows[0].voucher_number;
 };
 
+const assertSalesOrderAccess = async (
+  client: any,
+  input: {
+    tenantId: string;
+    userId: string;
+    salesOrderId: string;
+  },
+) => {
+  const values: any[] = [input.tenantId, input.salesOrderId];
+
+  const where: string[] = [
+    "so.tenant_id = $1",
+    "so.id = $2",
+    "so.deleted_at IS NULL",
+  ];
+
+  // addTallyRecordAccessFilter({
+  //   where,
+  //   values,
+  //   userId: input.userId,
+  //   recordAlias: "so",
+  //   costCenterExpression: "so.cost_center_id",
+  //   tallyCompanyId: null,
+  // });
+
+  const result = await client.query(
+    `
+    SELECT so.id
+    FROM sales_orders so
+    WHERE ${where.join(" AND ")}
+    LIMIT 1
+    `,
+    values,
+  );
+
+  return Boolean(result.rowCount);
+};
+
 export const getSalesOrdersHandler = async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
     const query = SalesOrderListQuerySchema.parse(req.query);
 
-    const values: any[] = [tenantId];
-    let index = 2;
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
 
-    let where = `WHERE so.tenant_id = $1 AND so.deleted_at IS NULL`;
+    const costCenterId = req.query.cost_center_id
+      ? String(req.query.cost_center_id)
+      : "";
+
+    const values: any[] = [tenantId];
+
+    const whereParts: string[] = ["so.tenant_id = $1", "so.deleted_at IS NULL"];
 
     if (query.search) {
       values.push(`%${query.search}%`);
-      where += ` AND (
-        so.voucher_number ILIKE $${index}
-        OR so.customer_name ILIKE $${index}
-        OR o.name ILIKE $${index}
-      )`;
-      index++;
+      whereParts.push(`
+        (
+          so.voucher_number ILIKE $${values.length}
+          OR so.customer_name ILIKE $${values.length}
+          OR o.name ILIKE $${values.length}
+          OR so.tally_company_name ILIKE $${values.length}
+          OR so.cost_center_name ILIKE $${values.length}
+        )
+      `);
     }
 
     if (query.status) {
       values.push(query.status);
-      where += ` AND so.status = $${index}`;
-      index++;
+      whereParts.push(`so.status = $${values.length}`);
     }
 
     if (query.customer_id) {
       values.push(query.customer_id);
-      where += ` AND so.organization_id = $${index}`;
-      index++;
+      whereParts.push(`so.organization_id = $${values.length}`);
     }
 
     if (query.assigned_to) {
       values.push(query.assigned_to);
-      where += ` AND so.assigned_to = $${index}`;
-      index++;
+      whereParts.push(`so.assigned_to = $${values.length}`);
     }
 
     if (query.from_date) {
       values.push(query.from_date);
-      where += ` AND so.voucher_date >= $${index}`;
-      index++;
+      whereParts.push(`so.voucher_date >= $${values.length}`);
     }
 
     if (query.to_date) {
       values.push(query.to_date);
-      where += ` AND so.voucher_date <= $${index}`;
-      index++;
+      whereParts.push(`so.voucher_date <= $${values.length}`);
     }
 
+    if (costCenterId) {
+      values.push(costCenterId);
+      whereParts.push(`so.cost_center_id = $${values.length}::uuid`);
+    }
+
+    // addTallyRecordAccessFilter({
+    //   where: whereParts,
+    //   values,
+    //   userId,
+    //   recordAlias: "so",
+    //   costCenterExpression: "so.cost_center_id",
+    //   tallyCompanyId: tallyCompanyId || null,
+    // });
+
     values.push(query.limit);
-    const limitIndex = index++;
+    const limitIndex = values.length;
 
     values.push(query.offset);
-    const offsetIndex = index;
+    const offsetIndex = values.length;
 
     const result = await pool.query(
       `
@@ -208,10 +267,15 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
         u.name AS assigned_to_name,
         COUNT(*) OVER()::int AS total_count
       FROM sales_orders so
-      LEFT JOIN organizations o ON o.id = so.organization_id AND o.tenant_id = so.tenant_id
-      LEFT JOIN quotes q ON q.id = so.quote_id AND q.tenant_id = so.tenant_id
-      LEFT JOIN users u ON u.id = so.assigned_to
-      ${where}
+      LEFT JOIN organizations o
+        ON o.id = so.organization_id
+       AND o.tenant_id = so.tenant_id
+      LEFT JOIN quotes q
+        ON q.id = so.quote_id
+       AND q.tenant_id = so.tenant_id
+      LEFT JOIN users u
+        ON u.id = so.assigned_to
+      WHERE ${whereParts.join(" AND ")}
       ORDER BY so.created_at DESC
       LIMIT $${limitIndex}
       OFFSET $${offsetIndex}
@@ -220,15 +284,22 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
     );
 
     res.json({
+      statusCode: 200,
       message: "Sales orders fetched successfully",
       data: result.rows,
       total: result.rows[0]?.total_count || 0,
       limit: query.limit,
       offset: query.offset,
+      filters: {
+        tally_company_id: tallyCompanyId || null,
+        cost_center_id: costCenterId || null,
+      },
     });
   } catch (error: any) {
     res.status(400).json({
+      statusCode: 400,
       message: error.message || "Failed to fetch sales orders",
+      data: null,
     });
   }
 };
@@ -236,7 +307,25 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
 export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
     const { id } = req.params;
+
+    const values: any[] = [tenantId, id];
+
+    const whereParts: string[] = [
+      "so.tenant_id = $1",
+      "so.id = $2",
+      "so.deleted_at IS NULL",
+    ];
+
+    // addTallyRecordAccessFilter({
+    //   where: whereParts,
+    //   values,
+    //   userId,
+    //   recordAlias: "so",
+    //   costCenterExpression: "so.cost_center_id",
+    //   tallyCompanyId: null,
+    // });
 
     const orderResult = await pool.query(
       `
@@ -249,17 +338,22 @@ export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
         COALESCE(o.name, so.customer_name) AS customer_name,
         u.name AS assigned_to_name
       FROM sales_orders so
-      LEFT JOIN organizations o ON o.id = so.organization_id AND o.tenant_id = so.tenant_id
-      LEFT JOIN users u ON u.id = so.assigned_to
-      WHERE so.id = $1
-        AND so.tenant_id = $2
-        AND so.deleted_at IS NULL
+      LEFT JOIN organizations o
+        ON o.id = so.organization_id
+       AND o.tenant_id = so.tenant_id
+      LEFT JOIN users u
+        ON u.id = so.assigned_to
+      WHERE ${whereParts.join(" AND ")}
       `,
-      [id, tenantId],
+      values,
     );
 
     if (!orderResult.rows.length) {
-      return res.status(404).json({ message: "Sales order not found" });
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Sales order not found",
+        data: null,
+      });
     }
 
     const itemsResult = await pool.query(
@@ -283,6 +377,7 @@ export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
     const totals = buildSalesOrderTotals(order, items);
 
     res.json({
+      statusCode: 200,
       message: "Sales order fetched successfully",
       data: {
         ...order,
@@ -299,7 +394,9 @@ export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     res.status(400).json({
+      statusCode: 400,
       message: error.message || "Failed to fetch sales order",
+      data: null,
     });
   }
 };
@@ -461,9 +558,24 @@ export const updateSalesOrderHandler = async (req: Request, res: Response) => {
     const tenantId = getTenantId(req);
     const userId = (req as any).user?.sub || (req as any).user?.id || null;
     const { id } = req.params;
+    const accessUserId = getUserIdFromRequest(req as any);
     const payload = UpdateSalesOrderSchema.parse(req.body);
 
     await client.query("BEGIN");
+    const hasAccess = await assertSalesOrderAccess(client, {
+      tenantId,
+      userId: accessUserId,
+      salesOrderId: id,
+    });
+
+    if (!hasAccess) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Sales order not found",
+        data: null,
+      });
+    }
 
     const existingResult = await client.query(
       `
@@ -629,11 +741,31 @@ export const updateSalesOrderHandler = async (req: Request, res: Response) => {
 };
 
 export const deleteSalesOrderHandler = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
     const { id } = req.params;
 
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    const hasAccess = await assertSalesOrderAccess(client, {
+      tenantId,
+      userId,
+      salesOrderId: id,
+    });
+
+    if (!hasAccess) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Sales order not found",
+        data: null,
+      });
+    }
+
+    const result = await client.query(
       `
       UPDATE sales_orders
       SET deleted_at = NOW()
@@ -645,16 +777,32 @@ export const deleteSalesOrderHandler = async (req: Request, res: Response) => {
       [id, tenantId],
     );
 
+    await client.query("COMMIT");
+
     if (!result.rows.length) {
-      return res.status(404).json({ message: "Sales order not found" });
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Sales order not found",
+        data: null,
+      });
     }
 
     res.json({
+      statusCode: 200,
       message: "Sales order deleted successfully",
+      data: {
+        id,
+      },
     });
   } catch (error: any) {
+    await client.query("ROLLBACK");
+
     res.status(400).json({
+      statusCode: 400,
       message: error.message || "Failed to delete sales order",
+      data: null,
     });
+  } finally {
+    client.release();
   }
 };

@@ -1,33 +1,57 @@
 import { NextFunction, Response } from "express";
 import { pool } from "../../db/pool";
 
+import {
+  addCostCenterMasterAccessFilter,
+  addTallyRecordAccessFilter,
+  getTenantIdFromRequest,
+  getUserIdFromRequest,
+} from "../../common/tallyAccess";
+
 export async function getCostCentersHandler(
   req: any,
   res: Response,
   next: NextFunction,
 ) {
   try {
-    const tenantId = req.tenant?.id || req.tenantId;
+    const tenantId = getTenantIdFromRequest(req);
+    const userId = getUserIdFromRequest(req);
+
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
+
+    const values: any[] = [tenantId];
+
+    const where: string[] = ["cc.tenant_id = $1", "cc.status = 'active'"];
+
+    addCostCenterMasterAccessFilter({
+      where,
+      values,
+      tenantAlias: "cc",
+      costCenterAlias: "cc",
+      userId,
+      tallyCompanyId: tallyCompanyId || null,
+    });
 
     const { rows } = await pool.query(
       `
       SELECT
-        id,
-        name,
-        parent_name,
-        description,
-        status,
-        created_at,
-        updated_at
-      FROM cost_centers
-      WHERE tenant_id = $1
-        AND status = 'active'
-      ORDER BY name ASC
+        cc.id,
+        cc.name,
+        cc.parent_name,
+        cc.description,
+        cc.status,
+        cc.created_at,
+        cc.updated_at
+      FROM cost_centers cc
+      WHERE ${where.join(" AND ")}
+      ORDER BY cc.name ASC
       `,
-      [tenantId],
+      values,
     );
 
-    res.json({
+    return res.json({
       statusCode: 200,
       message: "Cost centers fetched successfully",
       data: rows,
@@ -43,166 +67,180 @@ export async function getCostCenterSummaryHandler(
   next: NextFunction,
 ) {
   try {
-    const tenantId = req.tenant?.id || req.tenantId;
+    const tenantId = getTenantIdFromRequest(req);
+    const userId = getUserIdFromRequest(req);
+
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
+
+    const params: any[] = [tenantId, userId];
+    const companyFilter = tallyCompanyId
+      ? "AND cca.tally_company_id = $3::uuid"
+      : "";
+
+    if (tallyCompanyId) {
+      params.push(tallyCompanyId);
+    }
 
     const { rows } = await pool.query(
       `
-  WITH cost_center_orgs AS (
-    SELECT DISTINCT
-      cc.id AS cost_center_id,
-      cc.tenant_id,
-      o.id AS organization_id,
-      o.name AS organization_name,
-      o.type AS organization_type
-    FROM cost_centers cc
-    JOIN organizations o
-      ON o.tenant_id = cc.tenant_id
-     AND o.cost_center_id = cc.id
-    WHERE cc.tenant_id = $1
+      WITH accessible_cost_centers AS (
+        SELECT DISTINCT
+          cc.id,
+          cc.tenant_id,
+          cc.name,
+          cc.parent_name
+        FROM cost_centers cc
+        INNER JOIN user_cost_centers ucc
+          ON ucc.tenant_id = cc.tenant_id
+         AND ucc.cost_center_id = cc.id
+         AND ucc.user_id = $2::uuid
+         AND ucc.is_active = true
+         AND ucc.deleted_at IS NULL
+        INNER JOIN tally_company_cost_center_access cca
+          ON cca.tenant_id = cc.tenant_id
+         AND cca.cost_center_id = cc.id
+         AND cca.is_active = true
+         AND cca.deleted_at IS NULL
+         ${companyFilter}
+        WHERE cc.tenant_id = $1
+          AND cc.status = 'active'
+      ),
 
-    UNION
+      org_stats AS (
+        SELECT
+          acc.id AS cost_center_id,
+          COUNT(DISTINCT o.id) AS total_organizations,
+          COUNT(DISTINCT CASE WHEN o.type = 'customer' THEN o.id END) AS total_customers,
+          COUNT(DISTINCT CASE WHEN o.type = 'vendor' THEN o.id END) AS total_vendors
+        FROM accessible_cost_centers acc
+        LEFT JOIN organizations o
+          ON o.tenant_id = acc.tenant_id
+         AND o.cost_center_id = acc.id
+         AND o.deleted_at IS NULL
+        GROUP BY acc.id
+      ),
 
-    SELECT DISTINCT
-      occ.cost_center_id,
-      occ.tenant_id,
-      o.id AS organization_id,
-      o.name AS organization_name,
-      o.type AS organization_type
-    FROM organization_cost_centers occ
-    JOIN organizations o
-      ON o.id = occ.organization_id
-     AND o.tenant_id = occ.tenant_id
-    WHERE occ.tenant_id = $1
-  ),
+      outstanding_stats AS (
+        SELECT
+          acc.id AS cost_center_id,
 
-  org_stats AS (
-    SELECT
-      cost_center_id,
-      COUNT(DISTINCT organization_id) AS total_organizations,
-      COUNT(DISTINCT CASE WHEN organization_type = 'customer' THEN organization_id END) AS total_customers,
-      COUNT(DISTINCT CASE WHEN organization_type = 'vendor' THEN organization_id END) AS total_vendors
-    FROM cost_center_orgs
-    GROUP BY cost_center_id
-  ),
+          SUM(CASE
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END) AS total_receivable,
 
-  outstanding_stats AS (
-    SELECT
-      cco.cost_center_id,
+          SUM(CASE
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END) AS total_payable,
 
-      SUM(CASE
-        WHEN tout.bill_type = 'receivable'
-        THEN COALESCE(tout.pending_amount, 0)
-        ELSE 0
-      END) AS total_receivable,
+          SUM(CASE
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN -ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END) AS net_outstanding,
 
-      SUM(CASE
-        WHEN tout.bill_type = 'payable'
-        THEN COALESCE(tout.pending_amount, 0)
-        ELSE 0
-      END) AS total_payable,
+          SUM(CASE
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+             AND COALESCE(tout.due_date, tout.voucher_date, now()::date) >= now()::date - interval '30 days'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END) AS aging_0_30,
 
-      SUM(CASE
-        WHEN tout.bill_type = 'receivable' THEN COALESCE(tout.pending_amount, 0)
-        WHEN tout.bill_type = 'payable' THEN -COALESCE(tout.pending_amount, 0)
-        ELSE 0
-      END) AS net_outstanding,
+          SUM(CASE
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+             AND COALESCE(tout.due_date, tout.voucher_date, now()::date) < now()::date - interval '30 days'
+             AND COALESCE(tout.due_date, tout.voucher_date, now()::date) >= now()::date - interval '60 days'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END) AS aging_31_60,
 
-      SUM(CASE
-        WHEN tout.bill_type = 'receivable'
-         AND COALESCE(tout.due_date, tout.voucher_date, now()::date) >= now()::date - interval '30 days'
-        THEN COALESCE(tout.pending_amount, 0)
-        ELSE 0
-      END) AS aging_0_30,
+          SUM(CASE
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+             AND COALESCE(tout.due_date, tout.voucher_date, now()::date) < now()::date - interval '60 days'
+             AND COALESCE(tout.due_date, tout.voucher_date, now()::date) >= now()::date - interval '90 days'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END) AS aging_61_90,
 
-      SUM(CASE
-        WHEN tout.bill_type = 'receivable'
-         AND COALESCE(tout.due_date, tout.voucher_date, now()::date) < now()::date - interval '30 days'
-         AND COALESCE(tout.due_date, tout.voucher_date, now()::date) >= now()::date - interval '60 days'
-        THEN COALESCE(tout.pending_amount, 0)
-        ELSE 0
-      END) AS aging_31_60,
+          SUM(CASE
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+             AND COALESCE(tout.due_date, tout.voucher_date, now()::date) < now()::date - interval '90 days'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END) AS aging_90_plus
 
-      SUM(CASE
-        WHEN tout.bill_type = 'receivable'
-         AND COALESCE(tout.due_date, tout.voucher_date, now()::date) < now()::date - interval '60 days'
-         AND COALESCE(tout.due_date, tout.voucher_date, now()::date) >= now()::date - interval '90 days'
-        THEN COALESCE(tout.pending_amount, 0)
-        ELSE 0
-      END) AS aging_61_90,
+        FROM accessible_cost_centers acc
+        LEFT JOIN tally_outstandings tout
+          ON tout.tenant_id = acc.tenant_id
+         AND tout.cost_center_id = acc.id
+         AND tout.tally_company_id IS NOT NULL
+         ${tallyCompanyId ? "AND tout.tally_company_id = $3::uuid" : ""}
+        GROUP BY acc.id
+      ),
 
-      SUM(CASE
-        WHEN tout.bill_type = 'receivable'
-         AND COALESCE(tout.due_date, tout.voucher_date, now()::date) < now()::date - interval '90 days'
-        THEN COALESCE(tout.pending_amount, 0)
-        ELSE 0
-      END) AS aging_90_plus
+      sales_stats AS (
+        SELECT
+          acc.id AS cost_center_id,
+          SUM(COALESCE(so.total_amount, 0)) AS total_sales_amount
+        FROM accessible_cost_centers acc
+        LEFT JOIN sales_orders so
+          ON so.tenant_id = acc.tenant_id
+         AND so.cost_center_id = acc.id
+         AND so.deleted_at IS NULL
+         ${tallyCompanyId ? "AND so.tally_company_id = $3::uuid" : ""}
+        GROUP BY acc.id
+      ),
 
-    FROM cost_center_orgs cco
-    JOIN tally_outstandings tout
-      ON tout.tenant_id = cco.tenant_id
-     AND LOWER(TRIM(tout.ledger_name)) = LOWER(TRIM(cco.organization_name))
-    GROUP BY cco.cost_center_id
-  ),
+      purchase_stats AS (
+        SELECT
+          acc.id AS cost_center_id,
+          SUM(COALESCE(po.total_amount, 0)) AS total_purchase_amount
+        FROM accessible_cost_centers acc
+        LEFT JOIN purchase_orders po
+          ON po.tenant_id = acc.tenant_id
+         AND po.cost_center_id = acc.id
+         AND po.deleted_at IS NULL
+         ${tallyCompanyId ? "AND po.tally_company_id = $3::uuid" : ""}
+        GROUP BY acc.id
+      )
 
-  sales_stats AS (
-  SELECT
-    cco.cost_center_id,
-    SUM(COALESCE(so.total_amount, 0)) AS total_sales_amount
-  FROM cost_center_orgs cco
-  JOIN sales_orders so
-    ON so.tenant_id = cco.tenant_id
-   AND (
-     so.organization_id = cco.organization_id
-     OR LOWER(TRIM(so.customer_name)) = LOWER(TRIM(cco.organization_name))
-   )
-  GROUP BY cco.cost_center_id
-),
+      SELECT
+        acc.id,
+        acc.name,
+        acc.parent_name,
 
- purchase_stats AS (
-  SELECT
-    cco.cost_center_id,
-    SUM(COALESCE(po.total_amount, 0)) AS total_purchase_amount
-  FROM cost_center_orgs cco
-  JOIN purchase_orders po
-    ON po.tenant_id = cco.tenant_id
-   AND LOWER(TRIM(po.supplier_name)) = LOWER(TRIM(cco.organization_name))
-  GROUP BY cco.cost_center_id
-)
+        COALESCE(os.total_organizations, 0) AS total_organizations,
+        COALESCE(os.total_customers, 0) AS total_customers,
+        COALESCE(os.total_vendors, 0) AS total_vendors,
 
-  SELECT
-    cc.id,
-    cc.name,
-    cc.parent_name,
+        COALESCE(ss.total_sales_amount, 0) AS total_sales_amount,
+        COALESCE(ps.total_purchase_amount, 0) AS total_purchase_amount,
+        COALESCE(ss.total_sales_amount, 0) - COALESCE(ps.total_purchase_amount, 0) AS total_work_value,
 
-    COALESCE(os.total_organizations, 0) AS total_organizations,
-    COALESCE(os.total_customers, 0) AS total_customers,
-    COALESCE(os.total_vendors, 0) AS total_vendors,
+        COALESCE(outs.total_receivable, 0) AS total_receivable,
+        COALESCE(outs.total_payable, 0) AS total_payable,
+        COALESCE(outs.net_outstanding, 0) AS net_outstanding,
 
-    COALESCE(ss.total_sales_amount, 0) AS total_sales_amount,
-    COALESCE(ps.total_purchase_amount, 0) AS total_purchase_amount,
-    COALESCE(ss.total_sales_amount, 0) - COALESCE(ps.total_purchase_amount, 0) AS total_work_value,
+        COALESCE(outs.aging_0_30, 0) AS aging_0_30,
+        COALESCE(outs.aging_31_60, 0) AS aging_31_60,
+        COALESCE(outs.aging_61_90, 0) AS aging_61_90,
+        COALESCE(outs.aging_90_plus, 0) AS aging_90_plus
 
-    COALESCE(outs.total_receivable, 0) AS total_receivable,
-    COALESCE(outs.total_payable, 0) AS total_payable,
-    COALESCE(outs.net_outstanding, 0) AS net_outstanding,
-
-    COALESCE(outs.aging_0_30, 0) AS aging_0_30,
-    COALESCE(outs.aging_31_60, 0) AS aging_31_60,
-    COALESCE(outs.aging_61_90, 0) AS aging_61_90,
-    COALESCE(outs.aging_90_plus, 0) AS aging_90_plus
-
-  FROM cost_centers cc
-  LEFT JOIN org_stats os ON os.cost_center_id = cc.id
-  LEFT JOIN outstanding_stats outs ON outs.cost_center_id = cc.id
-  LEFT JOIN sales_stats ss ON ss.cost_center_id = cc.id
-  LEFT JOIN purchase_stats ps ON ps.cost_center_id = cc.id
-
-  WHERE cc.tenant_id = $1
-    AND cc.status = 'active'
-
-  ORDER BY net_outstanding DESC, cc.name ASC
-  `,
-      [tenantId],
+      FROM accessible_cost_centers acc
+      LEFT JOIN org_stats os ON os.cost_center_id = acc.id
+      LEFT JOIN outstanding_stats outs ON outs.cost_center_id = acc.id
+      LEFT JOIN sales_stats ss ON ss.cost_center_id = acc.id
+      LEFT JOIN purchase_stats ps ON ps.cost_center_id = acc.id
+      ORDER BY net_outstanding DESC, acc.name ASC
+      `,
+      params,
     );
 
     const totals = rows.reduce(
@@ -229,7 +267,7 @@ export async function getCostCenterSummaryHandler(
       },
     );
 
-    res.json({
+    return res.json({
       statusCode: 200,
       message: "Cost center summary fetched successfully",
       data: {
@@ -248,8 +286,30 @@ export async function getCostCenterOutstandingsHandler(
   next: NextFunction,
 ) {
   try {
-    const tenantId = req.tenant?.id || req.tenantId;
+    const tenantId = getTenantIdFromRequest(req);
+    const userId = getUserIdFromRequest(req);
+
     const { id } = req.params;
+
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
+
+    const values: any[] = [tenantId, id];
+
+    const where: string[] = [
+      "tout.tenant_id = $1",
+      "tout.cost_center_id = $2::uuid",
+    ];
+
+    addTallyRecordAccessFilter({
+      where,
+      values,
+      userId,
+      recordAlias: "tout",
+      costCenterExpression: "tout.cost_center_id",
+      tallyCompanyId: tallyCompanyId || null,
+    });
 
     const { rows } = await pool.query(
       `
@@ -265,16 +325,17 @@ export async function getCostCenterOutstandingsHandler(
         tout.bill_amount,
         tout.pending_amount,
         tout.cost_center_name,
+        tout.tally_company_id,
+        tout.tally_company_name,
         tout.synced_at
       FROM tally_outstandings tout
-      WHERE tout.tenant_id = $1
-        AND tout.cost_center_id = $2
+      WHERE ${where.join(" AND ")}
       ORDER BY tout.pending_amount DESC, tout.voucher_date DESC NULLS LAST
       `,
-      [tenantId, id],
+      values,
     );
 
-    res.json({
+    return res.json({
       statusCode: 200,
       message: "Cost center outstandings fetched successfully",
       data: rows,
@@ -290,23 +351,54 @@ export async function getCostCenterOrganizationsHandler(
   next: NextFunction,
 ) {
   try {
-    const tenantId = req.tenant?.id || req.tenantId;
+    const tenantId = getTenantIdFromRequest(req);
+    const userId = getUserIdFromRequest(req);
     const { id } = req.params;
+
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
+
+    const params: any[] = [tenantId, id, userId];
+
+    if (tallyCompanyId) {
+      params.push(tallyCompanyId);
+    }
 
     const { rows } = await pool.query(
       `
-      WITH mapped_orgs AS (
+      WITH accessible_cost_center AS (
+        SELECT cc.id, cc.tenant_id
+        FROM cost_centers cc
+        INNER JOIN user_cost_centers ucc
+          ON ucc.tenant_id = cc.tenant_id
+         AND ucc.cost_center_id = cc.id
+         AND ucc.user_id = $3::uuid
+         AND ucc.is_active = true
+         AND ucc.deleted_at IS NULL
+        INNER JOIN tally_company_cost_center_access cca
+          ON cca.tenant_id = cc.tenant_id
+         AND cca.cost_center_id = cc.id
+         AND cca.is_active = true
+         AND cca.deleted_at IS NULL
+         ${tallyCompanyId ? "AND cca.tally_company_id = $4::uuid" : ""}
+        WHERE cc.tenant_id = $1
+          AND cc.id = $2::uuid
+      ),
+
+      mapped_orgs AS (
         SELECT DISTINCT
           o.id,
           o.name,
           o.type,
           o.email,
-          o.phone,
           o.gst_number,
           100::numeric AS allocation_percent
-        FROM organizations o
-        WHERE o.tenant_id = $1
-          AND o.cost_center_id = $2
+        FROM accessible_cost_center acc
+        INNER JOIN organizations o
+          ON o.tenant_id = acc.tenant_id
+         AND o.cost_center_id = acc.id
+         AND o.deleted_at IS NULL
 
         UNION
 
@@ -315,24 +407,26 @@ export async function getCostCenterOrganizationsHandler(
           o.name,
           o.type,
           o.email,
-          o.phone,
           o.gst_number,
           occ.allocation_percent
-        FROM organization_cost_centers occ
-        JOIN organizations o
+        FROM accessible_cost_center acc
+        INNER JOIN organization_cost_centers occ
+          ON occ.tenant_id = acc.tenant_id
+         AND occ.cost_center_id = acc.id
+        INNER JOIN organizations o
           ON o.id = occ.organization_id
          AND o.tenant_id = occ.tenant_id
-        WHERE occ.tenant_id = $1
-          AND occ.cost_center_id = $2
+         AND o.deleted_at IS NULL
       )
+
       SELECT *
       FROM mapped_orgs
       ORDER BY name ASC
       `,
-      [tenantId, id],
+      params,
     );
 
-    res.json({
+    return res.json({
       statusCode: 200,
       message: "Cost center organizations fetched successfully",
       data: rows,
@@ -342,156 +436,170 @@ export async function getCostCenterOrganizationsHandler(
   }
 }
 
-function toSafeNumber(value: any) {
-  const n = Number(value || 0);
-  return Number.isFinite(n) ? n : 0;
-}
-
 function cleanLikeValue(value?: string) {
   return String(value || "").trim();
 }
 
 export async function getCostCenterPerformanceHandler(req: any, res: Response) {
-  const tenantId = req.user?.tenant_id || req.tenant?.id;
+  try {
+    const tenantId = getTenantIdFromRequest(req);
+    const userId = getUserIdFromRequest(req);
 
-  const {
-    cost_center_id,
-    ledger_name,
-    min_amount,
-    max_amount,
-    start_date,
-    end_date,
-  } = req.query;
+    const {
+      tally_company_id,
+      cost_center_id,
+      ledger_name,
+      min_amount,
+      max_amount,
+      start_date,
+      end_date,
+    } = req.query;
 
-  const params: any[] = [tenantId];
+    const params: any[] = [tenantId];
 
-  const filters: string[] = [
-    `tenant_id = $1`,
-    `COALESCE(cost_center_id::text, cost_center_name, '') <> ''`,
-  ];
+    const filters: string[] = [
+      `tout.tenant_id = $1`,
+      `COALESCE(tout.cost_center_id::text, tout.cost_center_name, '') <> ''`,
+    ];
 
-  if (cost_center_id) {
-    params.push(cost_center_id);
-    filters.push(`cost_center_id::text = $${params.length}`);
+    if (cost_center_id) {
+      params.push(cost_center_id);
+      filters.push(`tout.cost_center_id::text = $${params.length}`);
+    }
+
+    if (ledger_name) {
+      params.push(`%${cleanLikeValue(String(ledger_name))}%`);
+      filters.push(`tout.ledger_name ILIKE $${params.length}`);
+    }
+
+    filters.push(...buildDateFilter({ start_date, end_date }, params, "tout"));
+
+    addTallyRecordAccessFilter({
+      where: filters,
+      values: params,
+      userId,
+      recordAlias: "tout",
+      costCenterExpression: "tout.cost_center_id",
+      tallyCompanyId: tally_company_id ? String(tally_company_id) : null,
+    });
+
+    const havingFilters: string[] = [];
+
+    if (min_amount) {
+      params.push(Number(min_amount));
+      havingFilters.push(`
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) >= $${params.length}
+      `);
+    }
+
+    if (max_amount) {
+      params.push(Number(max_amount));
+      havingFilters.push(`
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) <= $${params.length}
+      `);
+    }
+
+    const sql = `
+      SELECT
+        COALESCE(tout.cost_center_id::text, tout.cost_center_name) AS id,
+        MAX(tout.cost_center_id::text) AS cost_center_id,
+        tout.cost_center_name,
+
+        COUNT(DISTINCT tout.ledger_name) AS ledger_count,
+        COUNT(*) AS bill_count,
+
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) AS total_business,
+
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) AS total_purchase,
+
+        SUM(ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))) AS total_activity,
+
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END
+        ) AS receivable,
+
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END
+        ) AS payable,
+
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN -ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) AS net_business,
+
+        MAX(tout.synced_at) AS last_synced_at
+
+      FROM tally_outstandings tout
+      WHERE ${filters.join(" AND ")}
+      GROUP BY COALESCE(tout.cost_center_id::text, tout.cost_center_name), tout.cost_center_name
+      ${havingFilters.length ? `HAVING ${havingFilters.join(" AND ")}` : ""}
+      ORDER BY total_business DESC, tout.cost_center_name ASC
+    `;
+
+    const { rows } = await pool.query(sql, params);
+
+    return res.json({
+      statusCode: 200,
+      message: "Cost center performance fetched successfully",
+      data: rows.map((row) => ({
+        id: row.id,
+        cost_center_id: row.cost_center_id,
+        cost_center_name: row.cost_center_name,
+        ledger_count: toNumber(row.ledger_count),
+        bill_count: toNumber(row.bill_count),
+        total_business: toNumber(row.total_business),
+        total_purchase: toNumber(row.total_purchase),
+        total_activity: toNumber(row.total_activity),
+        receivable: toNumber(row.receivable),
+        payable: toNumber(row.payable),
+        net_business: toNumber(row.net_business),
+        last_synced_at: row.last_synced_at,
+      })),
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      statusCode: 500,
+      message: error?.message || "Failed to fetch cost center performance",
+      data: null,
+    });
   }
-
-  if (ledger_name) {
-    params.push(`%${ledger_name}%`);
-    filters.push(`ledger_name ILIKE $${params.length}`);
-  }
-
-  filters.push(...buildDateFilter({ start_date, end_date }, params));
-
-  const havingFilters: string[] = [];
-
-  if (min_amount) {
-    params.push(Number(min_amount));
-    havingFilters.push(`
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) >= $${params.length}
-    `);
-  }
-
-  if (max_amount) {
-    params.push(Number(max_amount));
-    havingFilters.push(`
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) <= $${params.length}
-    `);
-  }
-
-  const sql = `
-    SELECT
-      COALESCE(cost_center_id::text, cost_center_name) AS id,
-      MAX(cost_center_id::text) AS cost_center_id,
-      cost_center_name,
-
-      COUNT(DISTINCT ledger_name) AS ledger_count,
-      COUNT(*) AS bill_count,
-
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) AS total_business,
-
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) AS total_purchase,
-
-      SUM(ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))) AS total_activity,
-
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(pending_amount, 0))
-          ELSE 0
-        END
-      ) AS receivable,
-
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
-          THEN ABS(COALESCE(pending_amount, 0))
-          ELSE 0
-        END
-      ) AS payable,
-
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
-          THEN -ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) AS net_business,
-
-      MAX(synced_at) AS last_synced_at
-
-    FROM tally_outstandings
-    WHERE ${filters.join(" AND ")}
-    GROUP BY COALESCE(cost_center_id::text, cost_center_name), cost_center_name
-    ${havingFilters.length ? `HAVING ${havingFilters.join(" AND ")}` : ""}
-    ORDER BY total_business DESC, cost_center_name ASC
-  `;
-
-  const { rows } = await pool.query(sql, params);
-
-  return res.json({
-    statusCode: 200,
-    message: "Cost center performance fetched successfully",
-    data: rows.map((row) => ({
-      id: row.id,
-      cost_center_id: row.cost_center_id,
-      cost_center_name: row.cost_center_name,
-      ledger_count: toNumber(row.ledger_count),
-      bill_count: toNumber(row.bill_count),
-      total_business: toNumber(row.total_business),
-      total_purchase: toNumber(row.total_purchase),
-      total_activity: toNumber(row.total_activity),
-      receivable: toNumber(row.receivable),
-      payable: toNumber(row.payable),
-      net_business: toNumber(row.net_business),
-      last_synced_at: row.last_synced_at,
-    })),
-  });
 }
 
 export async function getCostCenterPerformanceFiltersHandler(
@@ -500,43 +608,67 @@ export async function getCostCenterPerformanceFiltersHandler(
   next: NextFunction,
 ) {
   try {
-    const tenantId = req.tenant?.id || req.tenantId;
+    const tenantId = getTenantIdFromRequest(req);
+    const userId = getUserIdFromRequest(req);
+
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
+
+    const costCenterParams: any[] = [tenantId];
+    const costCenterWhere: string[] = ["cc.tenant_id = $1"];
+
+    addCostCenterMasterAccessFilter({
+      where: costCenterWhere,
+      values: costCenterParams,
+      tenantAlias: "cc",
+      costCenterAlias: "cc",
+      userId,
+      tallyCompanyId: tallyCompanyId || null,
+    });
+
+    const ledgerParams: any[] = [tenantId];
+    const ledgerWhere: string[] = [
+      "tout.tenant_id = $1",
+      "COALESCE(NULLIF(TRIM(tout.ledger_name), ''), '') <> ''",
+    ];
+
+    addTallyRecordAccessFilter({
+      where: ledgerWhere,
+      values: ledgerParams,
+      userId,
+      recordAlias: "tout",
+      costCenterExpression: "tout.cost_center_id",
+      tallyCompanyId: tallyCompanyId || null,
+    });
 
     const [costCentersResult, ledgersResult] = await Promise.all([
       pool.query(
         `
         SELECT DISTINCT
-          COALESCE(tout.cost_center_id, cc.id) AS id,
-          COALESCE(NULLIF(TRIM(tout.cost_center_name), ''), cc.name) AS name
-        FROM tally_outstandings tout
-        LEFT JOIN cost_centers cc
-          ON cc.tenant_id = tout.tenant_id
-         AND (
-            cc.id = tout.cost_center_id
-            OR LOWER(TRIM(cc.name)) = LOWER(TRIM(tout.cost_center_name))
-         )
-        WHERE tout.tenant_id = $1
-          AND COALESCE(NULLIF(TRIM(tout.cost_center_name), ''), cc.name) IS NOT NULL
-        ORDER BY name ASC
+          cc.id,
+          cc.name
+        FROM cost_centers cc
+        WHERE ${costCenterWhere.join(" AND ")}
+        ORDER BY cc.name ASC
         LIMIT 500
         `,
-        [tenantId],
+        costCenterParams,
       ),
 
       pool.query(
         `
-        SELECT DISTINCT ledger_name AS name
-        FROM tally_outstandings
-        WHERE tenant_id = $1
-          AND COALESCE(NULLIF(TRIM(ledger_name), ''), '') <> ''
-        ORDER BY ledger_name ASC
+        SELECT DISTINCT tout.ledger_name AS name
+        FROM tally_outstandings tout
+        WHERE ${ledgerWhere.join(" AND ")}
+        ORDER BY tout.ledger_name ASC
         LIMIT 500
         `,
-        [tenantId],
+        ledgerParams,
       ),
     ]);
 
-    res.json({
+    return res.json({
       statusCode: 200,
       message: "Cost center performance filters fetched successfully",
       data: {
@@ -558,17 +690,18 @@ function toNumber(value: any) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function buildDateFilter(query: any, params: any[]) {
+function buildDateFilter(query: any, params: any[], alias = "") {
   const filters: string[] = [];
+  const prefix = alias ? `${alias}.` : "";
 
   if (query.start_date) {
     params.push(query.start_date);
-    filters.push(`voucher_date >= $${params.length}`);
+    filters.push(`${prefix}voucher_date >= $${params.length}`);
   }
 
   if (query.end_date) {
     params.push(query.end_date);
-    filters.push(`voucher_date <= $${params.length}`);
+    filters.push(`${prefix}voucher_date <= $${params.length}`);
   }
 
   return filters;
@@ -578,87 +711,109 @@ export async function getCostCenterPerformanceLedgersHandler(
   req: any,
   res: Response,
 ) {
-  const tenantId = req.user?.tenant_id || req.tenant?.id;
-  const { id } = req.params;
+  try {
+    const tenantId = getTenantIdFromRequest(req);
+    const userId = getUserIdFromRequest(req);
+    const { id } = req.params;
 
-  const { start_date, end_date } = req.query;
+    const { tally_company_id, start_date, end_date } = req.query;
 
-  const params: any[] = [tenantId, id];
+    const params: any[] = [tenantId, id];
 
-  const filters: string[] = [
-    `tenant_id = $1`,
-    `COALESCE(cost_center_id::text, cost_center_name) = $2`,
-  ];
+    const filters: string[] = [
+      `tout.tenant_id = $1`,
+      `(
+    tout.cost_center_id = $2::uuid
+    OR LOWER(TRIM(COALESCE(tout.cost_center_name, ''))) = LOWER(TRIM($2::text))
+  )`,
+    ];
 
-  filters.push(...buildDateFilter({ start_date, end_date }, params));
+    filters.push(...buildDateFilter({ start_date, end_date }, params, "tout"));
 
-  const sql = `
-    SELECT
-      ledger_name,
+    addTallyRecordAccessFilter({
+      where: filters,
+      values: params,
+      userId,
+      recordAlias: "tout",
+      costCenterExpression: "tout.cost_center_id",
+      tallyCompanyId: tally_company_id ? String(tally_company_id) : null,
+    });
 
-      COUNT(*) AS bill_count,
+    const sql = `
+      SELECT
+        tout.ledger_name,
 
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) AS total_business,
+        COUNT(*) AS bill_count,
 
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) AS total_purchase,
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) AS total_business,
 
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(pending_amount, 0))
-          ELSE 0
-        END
-      ) AS receivable,
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) AS total_purchase,
 
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
-          THEN ABS(COALESCE(pending_amount, 0))
-          ELSE 0
-        END
-      ) AS payable,
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END
+        ) AS receivable,
 
-      SUM(
-        CASE 
-          WHEN LOWER(COALESCE(bill_type, '')) = 'receivable'
-          THEN ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          WHEN LOWER(COALESCE(bill_type, '')) = 'payable'
-          THEN -ABS(COALESCE(cost_center_amount, pending_amount, bill_amount, 0))
-          ELSE 0
-        END
-      ) AS net_business
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN ABS(COALESCE(tout.pending_amount, 0))
+            ELSE 0
+          END
+        ) AS payable,
 
-    FROM tally_outstandings
-    WHERE ${filters.join(" AND ")}
-    GROUP BY ledger_name
-    ORDER BY total_business DESC, ledger_name ASC
-  `;
+        SUM(
+          CASE 
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+            THEN -ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+            ELSE 0
+          END
+        ) AS net_business
 
-  const { rows } = await pool.query(sql, params);
+      FROM tally_outstandings tout
+      WHERE ${filters.join(" AND ")}
+      GROUP BY tout.ledger_name
+      ORDER BY total_business DESC, tout.ledger_name ASC
+    `;
 
-  return res.json({
-    statusCode: 200,
-    message: "Cost center ledger performance fetched successfully",
-    data: rows.map((row) => ({
-      ledger_name: row.ledger_name,
-      bill_count: toNumber(row.bill_count),
-      total_business: toNumber(row.total_business),
-      total_purchase: toNumber(row.total_purchase),
-      receivable: toNumber(row.receivable),
-      payable: toNumber(row.payable),
-      net_business: toNumber(row.net_business),
-    })),
-  });
+    const { rows } = await pool.query(sql, params);
+
+    return res.json({
+      statusCode: 200,
+      message: "Cost center ledger performance fetched successfully",
+      data: rows.map((row) => ({
+        ledger_name: row.ledger_name,
+        bill_count: toNumber(row.bill_count),
+        total_business: toNumber(row.total_business),
+        total_purchase: toNumber(row.total_purchase),
+        receivable: toNumber(row.receivable),
+        payable: toNumber(row.payable),
+        net_business: toNumber(row.net_business),
+      })),
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      statusCode: 500,
+      message:
+        error?.message || "Failed to fetch cost center ledger performance",
+      data: null,
+    });
+  }
 }

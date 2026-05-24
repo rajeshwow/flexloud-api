@@ -1,4 +1,8 @@
 import type { Request, Response } from "express";
+import {
+  getTenantIdFromRequest,
+  getUserIdFromRequest,
+} from "../../common/tallyAccess";
 import { pool } from "../../db/pool";
 import { CreatePurchaseOrderSchema } from "./purchase-orders.schema";
 
@@ -8,13 +12,52 @@ import {
 } from "./purchase-orders.schema";
 
 const getTenantId = (req: Request) => {
-  return req.params?.slug || req.headers["x-tenant-id"];
+  return getTenantIdFromRequest(req as any);
+};
+
+const assertPurchaseOrderAccess = async (
+  client: any,
+  input: {
+    tenantId: string;
+    userId: string;
+    purchaseOrderId: string;
+  },
+) => {
+  const values: any[] = [input.tenantId, input.purchaseOrderId];
+
+  const where: string[] = [
+    "po.tenant_id = $1",
+    "po.id = $2::uuid",
+    "po.deleted_at IS NULL",
+  ];
+
+  // addTallyRecordAccessFilter({
+  //   where,
+  //   values,
+  //   userId: input.userId,
+  //   recordAlias: "po",
+  //   costCenterExpression: "po.cost_center_id",
+  //   tallyCompanyId: null,
+  // });
+
+  const result = await client.query(
+    `
+    SELECT po.id
+    FROM purchase_orders po
+    WHERE ${where.join(" AND ")}
+    LIMIT 1
+    `,
+    values,
+  );
+
+  return Boolean(result.rowCount);
 };
 
 // 🔹 LISTING
 export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
 
     if (!tenantId) {
       return res.status(400).json({ message: "Tenant is required" });
@@ -22,8 +65,15 @@ export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
 
     const query = GetPurchaseOrdersQuerySchema.parse(req.query);
 
-    const where: string[] = [`po.tenant_id = $1`, `po.deleted_at IS NULL`];
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
 
+    const costCenterId = req.query.cost_center_id
+      ? String(req.query.cost_center_id)
+      : "";
+
+    const where: string[] = [`po.tenant_id = $1`, `po.deleted_at IS NULL`];
     const values: any[] = [tenantId];
 
     if (query.search) {
@@ -33,6 +83,8 @@ export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
           po.voucher_number ILIKE $${values.length}
           OR po.supplier_name ILIKE $${values.length}
           OR po.reference_number ILIKE $${values.length}
+          OR po.tally_company_name ILIKE $${values.length}
+          OR po.cost_center_name ILIKE $${values.length}
         )
       `);
     }
@@ -51,6 +103,20 @@ export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
       values.push(query.vendor);
       where.push(`po.raw_tally_data->>'vendor_id' = $${values.length}`);
     }
+
+    if (costCenterId) {
+      values.push(costCenterId);
+      where.push(`po.cost_center_id = $${values.length}::uuid`);
+    }
+
+    // addTallyRecordAccessFilter({
+    //   where,
+    //   values,
+    //   userId,
+    //   recordAlias: "po",
+    //   costCenterExpression: "po.cost_center_id",
+    //   tallyCompanyId: tallyCompanyId || null,
+    // });
 
     const whereSql = `WHERE ${where.join(" AND ")}`;
 
@@ -73,6 +139,13 @@ export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
       SELECT
         po.id,
         po.tenant_id,
+        po.tally_company_id,
+        po.tally_company_guid,
+        po.tally_company_name,
+        po.cost_center_id,
+        po.cost_center_guid,
+        po.cost_center_name,
+
         po.voucher_number AS po_number,
         po.supplier_name,
         po.supplier_gst,
@@ -127,16 +200,22 @@ export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
     const listResult = await pool.query(listSql, values);
 
     return res.status(200).json({
+      statusCode: 200,
       message: "Purchase orders fetched successfully",
       data: listResult.rows,
       total,
       offset: query.offset,
       limit: query.limit,
+      filters: {
+        tally_company_id: tallyCompanyId || null,
+        cost_center_id: costCenterId || null,
+      },
     });
   } catch (error: any) {
     console.error("getPurchaseOrdersHandler error:", error);
 
     return res.status(500).json({
+      statusCode: 500,
       message: "Failed to fetch purchase orders",
       error: error?.message,
     });
@@ -150,6 +229,7 @@ export const getPurchaseOrderByIdHandler = async (
 ) => {
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
 
     if (!tenantId) {
       return res.status(400).json({ message: "Tenant is required" });
@@ -157,61 +237,79 @@ export const getPurchaseOrderByIdHandler = async (
 
     const params = PurchaseOrderIdParamSchema.parse(req.params);
 
+    const values: any[] = [tenantId, params.id];
+
+    const where: string[] = [
+      "po.tenant_id = $1",
+      "po.id = $2::uuid",
+      "po.deleted_at IS NULL",
+    ];
+
+    // addTallyRecordAccessFilter({
+    //   where,
+    //   values,
+    //   userId,
+    //   recordAlias: "po",
+    //   costCenterExpression: "po.cost_center_id",
+    //   tallyCompanyId: null,
+    // });
+
     const sql = `
-  SELECT
-    po.*,
+      SELECT
+        po.*,
 
-    po.voucher_number AS po_number,
-    po.raw_tally_data->>'expected_delivery_date' AS expected_delivery_date,
-    po.raw_tally_data->>'assigned_to' AS assigned_to,
+        po.voucher_number AS po_number,
+        po.raw_tally_data->>'expected_delivery_date' AS expected_delivery_date,
+        po.raw_tally_data->>'assigned_to' AS assigned_to,
 
-    COALESCE(u.name, u.email) AS assigned_to_name,
+        COALESCE(u.name, u.email) AS assigned_to_name,
 
-    COALESCE(items.items_count, 0)::int AS items_count,
-    COALESCE(items.items, '[]'::json) AS items
+        COALESCE(items.items_count, 0)::int AS items_count,
+        COALESCE(items.items, '[]'::json) AS items
 
-  FROM purchase_orders po
+      FROM purchase_orders po
 
-  LEFT JOIN users u
-    ON u.id::text = po.raw_tally_data->>'assigned_to'
-   AND u.tenant_id = po.tenant_id
+      LEFT JOIN users u
+        ON u.id::text = po.raw_tally_data->>'assigned_to'
+       AND u.tenant_id = po.tenant_id
 
-  LEFT JOIN LATERAL (
-    SELECT
-      COUNT(*)::int AS items_count,
-      json_agg(
-        json_build_object(
-          'id', poi.id,
-          'item_name', poi.item_name,
-          'item_code', poi.item_code,
-          'description', poi.description,
-          'quantity', poi.quantity,
-          'rate', poi.rate,
-          'amount', poi.amount,
-          'unit', poi.unit,
-          'raw_tally_data', poi.raw_tally_data
-        )
-        ORDER BY poi.id
-      ) AS items
-    FROM purchase_order_items poi
-    WHERE poi.purchase_order_id = po.id
-  ) items ON true
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS items_count,
+          json_agg(
+            json_build_object(
+              'id', poi.id,
+              'item_name', poi.item_name,
+              'item_code', poi.item_code,
+              'description', poi.description,
+              'quantity', poi.quantity,
+              'rate', poi.rate,
+              'amount', poi.amount,
+              'unit', poi.unit,
+              'raw_tally_data', poi.raw_tally_data
+            )
+            ORDER BY poi.id
+          ) AS items
+        FROM purchase_order_items poi
+        WHERE poi.purchase_order_id = po.id
+      ) items ON true
 
-  WHERE po.id = $1
-    AND po.tenant_id = $2
-    AND po.deleted_at IS NULL
-  LIMIT 1
-`;
+      WHERE ${where.join(" AND ")}
+      LIMIT 1
+    `;
 
-    const result = await pool.query(sql, [params.id, tenantId]);
+    const result = await pool.query(sql, values);
 
     if (!result.rows.length) {
       return res.status(404).json({
+        statusCode: 404,
         message: "Purchase order not found",
+        data: null,
       });
     }
 
     return res.status(200).json({
+      statusCode: 200,
       message: "Purchase order fetched successfully",
       data: result.rows[0],
     });
@@ -219,6 +317,7 @@ export const getPurchaseOrderByIdHandler = async (
     console.error("getPurchaseOrderByIdHandler error:", error);
 
     return res.status(500).json({
+      statusCode: 500,
       message: "Failed to fetch purchase order",
       error: error?.message,
     });
@@ -421,8 +520,24 @@ export const updatePurchaseOrderHandler = async (
     const tenantId = getTenantId(req);
     const { id } = req.params;
     const body = req.body;
+    const userId = getUserIdFromRequest(req as any);
 
     await client.query("BEGIN");
+
+    const hasAccess = await assertPurchaseOrderAccess(client, {
+      tenantId: String(tenantId),
+      userId,
+      purchaseOrderId: id,
+    });
+
+    if (!hasAccess) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Purchase order not found",
+        data: null,
+      });
+    }
 
     await client.query(
       `
@@ -433,7 +548,9 @@ export const updatePurchaseOrderHandler = async (
         total_amount = $3,
         raw_tally_data = $4,
         updated_at = NOW()
-      WHERE id = $5 AND tenant_id = $6
+      WHERE id = $5
+        AND tenant_id = $6
+        AND deleted_at IS NULL
       `,
       [body.po_number, body.po_date, body.grand_total, body, id, tenantId],
     );

@@ -219,6 +219,125 @@ function normalizeDateOrNull(value?: string | null) {
   return null;
 }
 
+type TallyCompanyContext = {
+  id: string;
+  tally_guid: string | null;
+  name: string;
+};
+
+function extractTallyCompanyFromPayload(row: any, connection: any) {
+  const tallyCompanyGuid =
+    cleanText(row?.tallyCompanyGuid) ||
+    cleanText(row?.tally_company_guid) ||
+    cleanText(row?.companyGuid) ||
+    cleanText(row?.company_guid) ||
+    cleanText(connection?.company_guid);
+
+  const tallyCompanyName =
+    cleanText(row?.tallyCompanyName) ||
+    cleanText(row?.tally_company_name) ||
+    cleanText(row?.companyName) ||
+    cleanText(row?.company_name) ||
+    cleanText(connection?.company_name);
+
+  return {
+    tallyCompanyGuid,
+    tallyCompanyName,
+  };
+}
+
+async function resolveTallyCompany(
+  client: any,
+  tenantId: string,
+  row: any,
+  connection: any,
+): Promise<TallyCompanyContext> {
+  const { tallyCompanyGuid, tallyCompanyName } = extractTallyCompanyFromPayload(
+    row,
+    connection,
+  );
+
+  const finalName = tallyCompanyName || tallyCompanyGuid;
+
+  if (!finalName) {
+    throw new Error(
+      "Tally company details missing. Send companyName/companyGuid from sync agent or save Tally connection first.",
+    );
+  }
+
+  const existing = await client.query(
+    `
+    SELECT id, tally_guid, name
+    FROM tally_companies
+    WHERE tenant_id = $1
+      AND deleted_at IS NULL
+      AND (
+        ($2::text IS NOT NULL AND tally_guid = $2)
+        OR lower(trim(name)) = lower(trim($3))
+      )
+    ORDER BY
+      CASE WHEN $2::text IS NOT NULL AND tally_guid = $2 THEN 0 ELSE 1 END
+    LIMIT 1
+    `,
+    [tenantId, tallyCompanyGuid, finalName],
+  );
+
+  if (existing.rows[0]) {
+    const updated = await client.query(
+      `
+      UPDATE tally_companies
+      SET
+        tally_guid = COALESCE($3, tally_guid),
+        name = COALESCE($4, name),
+        formal_name = COALESCE($4, formal_name),
+        is_active = true,
+        raw_tally_data = COALESCE($5::jsonb, raw_tally_data),
+        deleted_at = NULL,
+        updated_at = now()
+      WHERE tenant_id = $1
+        AND id = $2
+      RETURNING id, tally_guid, name
+      `,
+      [
+        tenantId,
+        existing.rows[0].id,
+        tallyCompanyGuid,
+        finalName,
+        connection ? JSON.stringify(connection) : null,
+      ],
+    );
+
+    return updated.rows[0];
+  }
+
+  const inserted = await client.query(
+    `
+    INSERT INTO tally_companies (
+      tenant_id,
+      tally_guid,
+      name,
+      formal_name,
+      country,
+      state,
+      is_active,
+      raw_tally_data,
+      created_at,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $3, 'India', NULL, true, $4::jsonb, now(), now())
+    RETURNING id, tally_guid, name
+    `,
+    [
+      tenantId,
+      tallyCompanyGuid,
+      finalName,
+      connection ? JSON.stringify(connection) : null,
+    ],
+  );
+
+  return inserted.rows[0];
+}
+
 async function resolveCostCenterId(
   client: any,
   tenantId: string,
@@ -778,11 +897,21 @@ export async function pullTallyLedgers(input: {
       try {
         const mapped = mapTallyLedgerToOrganization(row);
 
+        const tallyCompany = await resolveTallyCompany(
+          client,
+          input.tenantId,
+          row,
+          connection,
+        );
+
         await client.query(
           `
   INSERT INTO tally_ledgers
   (
     tenant_id,
+    tally_company_id,
+    tally_company_guid,
+    tally_company_name,
     tally_guid,
     name,
     parent,
@@ -795,9 +924,14 @@ export async function pullTallyLedgers(input: {
     closing_balance,
     synced_at
   )
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
-  ON CONFLICT (tenant_id, tally_guid)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+  ON CONFLICT (tenant_id, tally_company_id, tally_guid)
+  WHERE tally_company_id IS NOT NULL
+    AND tally_guid IS NOT NULL
+    AND tally_guid <> ''
   DO UPDATE SET
+    tally_company_guid = EXCLUDED.tally_company_guid,
+    tally_company_name = EXCLUDED.tally_company_name,
     name = EXCLUDED.name,
     parent = EXCLUDED.parent,
     gstin = EXCLUDED.gstin,
@@ -811,6 +945,9 @@ export async function pullTallyLedgers(input: {
   `,
           [
             input.tenantId,
+            tallyCompany.id,
+            tallyCompany.tally_guid,
+            tallyCompany.name,
             row.guid,
             row.name,
             row.parent || null,
@@ -1073,6 +1210,13 @@ export async function pullTallyOutstandings(input: {
       try {
         const mapped = normalizeOutstandingRow(row);
 
+        const tallyCompany = await resolveTallyCompany(
+          client,
+          input.tenantId,
+          row,
+          connection,
+        );
+
         const costCenterId = await resolveCostCenterId(client, input.tenantId, {
           cost_center_guid: mapped.cost_center_guid,
           cost_center_name: mapped.cost_center_name,
@@ -1089,13 +1233,14 @@ export async function pullTallyOutstandings(input: {
         if (!mapped.ledger_guid) {
           const ledgerResult = await client.query(
             `
-        SELECT tally_guid
-        FROM tally_ledgers
-        WHERE tenant_id = $1
-          AND lower(trim(name)) = lower(trim($2))
-        LIMIT 1
-        `,
-            [input.tenantId, mapped.ledger_name],
+  SELECT tally_guid
+  FROM tally_ledgers
+  WHERE tenant_id = $1
+    AND tally_company_id = $3::uuid
+    AND lower(trim(name)) = lower(trim($2))
+  LIMIT 1
+  `,
+            [input.tenantId, mapped.ledger_name, tallyCompany.id],
           );
 
           mapped.ledger_guid = ledgerResult.rows?.[0]?.tally_guid || null;
@@ -1119,6 +1264,7 @@ export async function pullTallyOutstandings(input: {
   SELECT id
   FROM tally_outstandings
   WHERE tenant_id = $1
+    AND tally_company_id = $6::uuid
     AND COALESCE(NULLIF(ledger_guid, ''), 'NO_LEDGER_GUID')
         = COALESCE(NULLIF($2, ''), 'NO_LEDGER_GUID')
     AND lower(trim(COALESCE(ledger_name, '')))
@@ -1136,35 +1282,39 @@ export async function pullTallyOutstandings(input: {
             mapped.ledger_name,
             mapped.bill_ref,
             mapped.voucher_number,
+            tallyCompany.id,
           ],
         );
 
         if (existingOutstanding.rowCount) {
           await client.query(
             `
-    UPDATE tally_outstandings
-    SET
-      tally_guid = $3,
-      ledger_guid = $4,
-      ledger_name = $5,
-      voucher_guid = $6,
-      voucher_number = $7,
-      voucher_type = $8,
-      voucher_date = $9,
-      due_date = $10,
-      bill_ref = $11,
-      bill_type = $12,
-      bill_amount = $13,
-      pending_amount = $14,
-      synced_at = NOW(),
-      cost_center_guid = $15,
-      cost_center_name = $16,
-      cost_center_id = $17,
-      cost_category = $18,
-      cost_center_amount = $19
-    WHERE id = $1
-      AND tenant_id = $2
-    `,
+  UPDATE tally_outstandings
+  SET
+    tally_guid = $3,
+    ledger_guid = $4,
+    ledger_name = $5,
+    voucher_guid = $6,
+    voucher_number = $7,
+    voucher_type = $8,
+    voucher_date = $9,
+    due_date = $10,
+    bill_ref = $11,
+    bill_type = $12,
+    bill_amount = $13,
+    pending_amount = $14,
+    synced_at = NOW(),
+    cost_center_guid = $15,
+    cost_center_name = $16,
+    cost_center_id = $17,
+    cost_category = $18,
+    cost_center_amount = $19,
+    tally_company_id = $20,
+    tally_company_guid = $21,
+    tally_company_name = $22
+  WHERE id = $1
+    AND tenant_id = $2
+  `,
             [
               existingOutstanding.rows[0].id,
               input.tenantId,
@@ -1185,40 +1335,49 @@ export async function pullTallyOutstandings(input: {
               costCenterId,
               mapped.cost_category,
               mapped.cost_center_amount,
+              tallyCompany.id,
+              tallyCompany.tally_guid,
+              tallyCompany.name,
             ],
           );
         } else {
           await client.query(
             `
-    INSERT INTO tally_outstandings
-    (
-      tenant_id,
-      tally_guid,
-      ledger_guid,
-      ledger_name,
-      voucher_guid,
-      voucher_number,
-      voucher_type,
-      voucher_date,
-      due_date,
-      bill_ref,
-      bill_type,
-      bill_amount,
-      pending_amount,
-      synced_at,
-      cost_center_guid,
-      cost_center_name,
-      cost_center_id,
-      cost_category,
-      cost_center_amount
-    )
-    VALUES
-    (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),$14,$15,$16,$17,$18
-    )
-    `,
+  INSERT INTO tally_outstandings
+  (
+    tenant_id,
+    tally_company_id,
+    tally_company_guid,
+    tally_company_name,
+    tally_guid,
+    ledger_guid,
+    ledger_name,
+    voucher_guid,
+    voucher_number,
+    voucher_type,
+    voucher_date,
+    due_date,
+    bill_ref,
+    bill_type,
+    bill_amount,
+    pending_amount,
+    synced_at,
+    cost_center_guid,
+    cost_center_name,
+    cost_center_id,
+    cost_category,
+    cost_center_amount
+  )
+  VALUES
+  (
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),$17,$18,$19,$20,$21
+  )
+  `,
             [
               input.tenantId,
+              tallyCompany.id,
+              tallyCompany.tally_guid,
+              tallyCompany.name,
               mapped.tally_guid,
               mapped.ledger_guid,
               mapped.ledger_name,
@@ -2049,6 +2208,12 @@ async function pullTallyVouchers(input: {
         }
 
         const tallyGuid = cleanText(row.guid);
+        const tallyCompany = await resolveTallyCompany(
+          client,
+          input.tenantId,
+          row,
+          connection,
+        );
         const partyName = cleanText(row.partyName || row.ledgerName);
         const organizationId = await findOrganizationIdByName(
           client,
@@ -2109,16 +2274,18 @@ async function pullTallyVouchers(input: {
 
         const existingOrder = await client.query(
           `
-          SELECT id
-          FROM ${headerTable}
-          WHERE tenant_id = $1
-            AND (
-              ($2::text IS NOT NULL AND tally_guid = $2)
-              OR voucher_number = $3
-            )
-          LIMIT 1
-          `,
-          [input.tenantId, tallyGuid, voucherNo],
+  SELECT id
+  FROM ${headerTable}
+  WHERE tenant_id = $1
+    AND tally_company_id = $4::uuid
+    AND (
+      ($2::text IS NOT NULL AND tally_guid = $2)
+      OR voucher_number = $3
+    )
+  LIMIT 1
+  FOR UPDATE
+  `,
+          [input.tenantId, tallyGuid, voucherNo, tallyCompany.id],
         );
 
         if (existingOrder.rowCount) {
@@ -2144,6 +2311,9 @@ async function pullTallyVouchers(input: {
     cost_category = $14,
     cost_center_amount = $15,
     cost_center_allocations = $16,
+    tally_company_id = $17,
+    tally_company_guid = $18,
+    tally_company_name = $19,
     updated_at = NOW()
   WHERE id = $1
     AND tenant_id = $2
@@ -2165,6 +2335,9 @@ async function pullTallyVouchers(input: {
                 costCategory,
                 costCenterAmount,
                 JSON.stringify(costCenterAllocations),
+                tallyCompany.id,
+                tallyCompany.tally_guid,
+                tallyCompany.name,
               ],
             );
           } else {
@@ -2189,6 +2362,9 @@ async function pullTallyVouchers(input: {
     cost_category = $15,
     cost_center_amount = $16,
     cost_center_allocations = $17,
+    tally_company_id = $18,
+    tally_company_guid = $19,
+    tally_company_name = $20,
     updated_at = NOW()
   WHERE id = $1
     AND tenant_id = $2
@@ -2211,6 +2387,9 @@ async function pullTallyVouchers(input: {
                 costCategory,
                 costCenterAmount,
                 JSON.stringify(costCenterAllocations),
+                tallyCompany.id,
+                tallyCompany.tally_guid,
+                tallyCompany.name,
               ],
             );
           }
@@ -2221,6 +2400,9 @@ async function pullTallyVouchers(input: {
   INSERT INTO purchase_orders
   (
     tenant_id,
+    tally_company_id,
+    tally_company_guid,
+    tally_company_name,
     tally_guid,
     voucher_number,
     voucher_date,
@@ -2241,12 +2423,15 @@ async function pullTallyVouchers(input: {
   )
   VALUES
   (
-    $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW()
+    $1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),NOW()
   )
   RETURNING id
   `,
               [
                 input.tenantId,
+                tallyCompany.id,
+                tallyCompany.tally_guid,
+                tallyCompany.name,
                 tallyGuid,
                 voucherNo,
                 voucherDate,
@@ -2271,6 +2456,9 @@ async function pullTallyVouchers(input: {
   INSERT INTO sales_orders
   (
     tenant_id,
+    tally_company_id,
+    tally_company_guid,
+    tally_company_name,
     tally_guid,
     voucher_number,
     voucher_date,
@@ -2293,12 +2481,15 @@ async function pullTallyVouchers(input: {
   )
   VALUES
   (
-    $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW()
+    $1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW()
   )
   RETURNING id
   `,
               [
                 input.tenantId,
+                tallyCompany.id,
+                tallyCompany.tally_guid,
+                tallyCompany.name,
                 tallyGuid,
                 voucherNo,
                 voucherDate,
@@ -2641,6 +2832,16 @@ export async function updateTallyRunningCompanyHandler(
       RETURNING *
       `,
       [tenantId, companyName, companyGuid, tallyUrl],
+    );
+
+    await resolveTallyCompany(
+      pool,
+      tenantId,
+      {
+        companyName,
+        companyGuid,
+      },
+      rows[0],
     );
 
     return sendTallyResponse(

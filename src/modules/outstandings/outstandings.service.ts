@@ -1,6 +1,12 @@
 import type { Request, Response } from "express";
 import { pool } from "../../db/pool";
 
+import {
+  addTallyRecordAccessFilter,
+  getTenantIdFromRequest,
+  getUserIdFromRequest,
+} from "../../common/tallyAccess";
+
 function sendSuccess(res: Response, message: string, data: any) {
   return res.status(200).json({
     statusCode: 200,
@@ -20,17 +26,7 @@ function sendError(res: Response, error: any) {
 }
 
 function getTenantId(req: Request) {
-  const tenantId =
-    (req as any).tenant?.id ||
-    (req as any).tenant_id ||
-    (req as any).tenantId ||
-    req.headers["x-tenant-id"];
-
-  if (!tenantId) {
-    throw new Error("Tenant not resolved");
-  }
-
-  return String(tenantId);
+  return getTenantIdFromRequest(req as any);
 }
 
 function toInt(value: any, fallback: number) {
@@ -70,7 +66,9 @@ function normalizeSortOrder(sortOrder?: any) {
 
 function buildWhere(input: {
   tenantId: string;
+  userId: string;
   type?: string;
+  tallyCompanyId?: string;
   costCenterId?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -88,11 +86,12 @@ function buildWhere(input: {
   if (input.costCenterId) {
     values.push(input.costCenterId);
     where.push(`
-    (
-      tally_cc.id = $${values.length}
-      OR org_cc.id = $${values.length}
-    )
-  `);
+      (
+        tally_cc.id = $${values.length}::uuid
+        OR org_cc.id = $${values.length}::uuid
+        OR o.cost_center_id = $${values.length}::uuid
+      )
+    `);
   }
 
   if (input.dateFrom) {
@@ -116,9 +115,19 @@ function buildWhere(input: {
         OR o.cost_center_name ILIKE $${values.length}
         OR tally_cc.name ILIKE $${values.length}
         OR org_cc.name ILIKE $${values.length}
+        OR o.tally_company_name ILIKE $${values.length}
       )
     `);
   }
+
+  addTallyRecordAccessFilter({
+    where,
+    values,
+    userId: input.userId,
+    recordAlias: "o",
+    costCenterExpression: "COALESCE(o.cost_center_id, tally_cc.id, org_cc.id)",
+    tallyCompanyId: input.tallyCompanyId || null,
+  });
 
   return {
     whereSql: where.join(" AND "),
@@ -173,6 +182,7 @@ const baseFromSql = `
 export async function getOutstandingsHandler(req: Request, res: Response) {
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
 
     const page = toInt(req.query.page, 1);
     const limit = Math.min(toInt(req.query.limit, 20), 100);
@@ -204,9 +214,15 @@ export async function getOutstandingsHandler(req: Request, res: Response) {
       `,
     };
 
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
+
     const { whereSql, values } = buildWhere({
       tenantId,
+      userId,
       type,
+      tallyCompanyId,
       costCenterId,
       dateFrom,
       dateTo,
@@ -310,6 +326,7 @@ COALESCE(
       },
       filters: {
         type,
+        tally_company_id: tallyCompanyId || null,
         cost_center_id: costCenterId || null,
         date_from: dateFrom || null,
         date_to: dateTo || null,
@@ -329,6 +346,7 @@ export async function getOutstandingsSummaryHandler(
 ) {
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
 
     const type = normalizeType(req.query.type || "all");
     const costCenterId = req.query.cost_center_id
@@ -337,10 +355,15 @@ export async function getOutstandingsSummaryHandler(
     const dateFrom = req.query.date_from ? String(req.query.date_from) : "";
     const dateTo = req.query.date_to ? String(req.query.date_to) : "";
     const search = req.query.search ? String(req.query.search).trim() : "";
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
 
     const { whereSql, values } = buildWhere({
       tenantId,
+      userId,
       type,
+      tallyCompanyId,
       costCenterId,
       dateFrom,
       dateTo,
@@ -412,39 +435,60 @@ export async function getOutstandingCostCentersHandler(
 ) {
   try {
     const tenantId = getTenantId(req);
+    const userId = getUserIdFromRequest(req as any);
+
+    const tallyCompanyId = req.query.tally_company_id
+      ? String(req.query.tally_company_id)
+      : "";
+
+    const values: any[] = [tenantId];
+
+    const where: string[] = [
+      "o.tenant_id = $1",
+      "COALESCE(tally_cc.id::text, org_cc.id::text, o.cost_center_id::text, NULLIF(o.cost_center_name, '')) IS NOT NULL",
+    ];
+
+    addTallyRecordAccessFilter({
+      where,
+      values,
+      userId,
+      recordAlias: "o",
+      costCenterExpression:
+        "COALESCE(tally_cc.id, org_cc.id, o.cost_center_id)",
+      tallyCompanyId: tallyCompanyId || null,
+    });
 
     const sql = `
-  SELECT
-    COALESCE(tally_cc.id, org_cc.id) AS id,
-    COALESCE(tally_cc.name, org_cc.name, o.cost_center_name) AS name,
-    COUNT(DISTINCT o.id)::int AS outstanding_count,
+      SELECT
+        COALESCE(tally_cc.id, org_cc.id, o.cost_center_id) AS id,
+        COALESCE(tally_cc.name, org_cc.name, o.cost_center_name) AS name,
+        COUNT(DISTINCT o.id)::int AS outstanding_count,
 
-    COALESCE(SUM(
-      CASE
-        WHEN LOWER(COALESCE(o.bill_type, '')) = 'receivable'
-        THEN ABS(COALESCE(o.pending_amount, 0))
-        ELSE 0
-      END
-    ), 0)::numeric AS receivable,
+        COALESCE(SUM(
+          CASE
+            WHEN LOWER(COALESCE(o.bill_type, '')) = 'receivable'
+            THEN ABS(COALESCE(o.pending_amount, 0))
+            ELSE 0
+          END
+        ), 0)::numeric AS receivable,
 
-    COALESCE(SUM(
-      CASE
-        WHEN LOWER(COALESCE(o.bill_type, '')) = 'payable'
-        THEN ABS(COALESCE(o.pending_amount, 0))
-        ELSE 0
-      END
-    ), 0)::numeric AS payable
+        COALESCE(SUM(
+          CASE
+            WHEN LOWER(COALESCE(o.bill_type, '')) = 'payable'
+            THEN ABS(COALESCE(o.pending_amount, 0))
+            ELSE 0
+          END
+        ), 0)::numeric AS payable
 
-  ${baseFromSql}
-  WHERE o.tenant_id = $1
-    AND COALESCE(tally_cc.id::text, org_cc.id::text, NULLIF(o.cost_center_name, '')) IS NOT NULL
-  GROUP BY
-    COALESCE(tally_cc.id, org_cc.id),
-    COALESCE(tally_cc.name, org_cc.name, o.cost_center_name)
-  ORDER BY name ASC
-`;
+      ${baseFromSql}
+      WHERE ${where.join(" AND ")}
+      GROUP BY
+        COALESCE(tally_cc.id, org_cc.id, o.cost_center_id),
+        COALESCE(tally_cc.name, org_cc.name, o.cost_center_name)
+      ORDER BY name ASC
+    `;
 
-    const result = await pool.query(sql, [tenantId]);
+    const result = await pool.query(sql, values);
 
     return sendSuccess(
       res,

@@ -7,12 +7,17 @@ import {
   UpdateWarehouseStatusSchema,
 } from "./warehouse.schema";
 
+import {
+  getTenantIdFromRequest,
+  getUserIdFromRequest,
+} from "../../common/tallyAccess";
+
 function getTenantId(req: Request) {
-  return (req as any).user?.tenantId || (req as any).tenant?.id;
+  return getTenantIdFromRequest(req as any);
 }
 
 function getUserId(req: Request) {
-  return (req as any).user?.id;
+  return getUserIdFromRequest(req as any);
 }
 
 async function generateNumber(
@@ -33,6 +38,164 @@ async function generateNumber(
 
   const next = Number(rows[0]?.total || 0) + 1;
   return `${prefix}-${String(next).padStart(7, "0")}`;
+}
+
+async function assertPurchaseOrderWarehouseAccess(
+  client: any,
+  input: {
+    tenantId: string;
+    userId: string;
+    purchaseOrderId: string;
+  },
+) {
+  const values: any[] = [input.tenantId, input.purchaseOrderId];
+
+  const where: string[] = [
+    "po.tenant_id = $1",
+    "po.id = $2::uuid",
+    "po.deleted_at IS NULL",
+  ];
+
+  // addTallyRecordAccessFilter({
+  //   where,
+  //   values,
+  //   userId: input.userId,
+  //   recordAlias: "po",
+  //   costCenterExpression: "po.cost_center_id",
+  //   tallyCompanyId: null,
+  // });
+
+  const { rows } = await client.query(
+    `
+    SELECT po.id
+    FROM purchase_orders po
+    WHERE ${where.join(" AND ")}
+    LIMIT 1
+    `,
+    values,
+  );
+
+  return Boolean(rows.length);
+}
+
+async function assertSalesOrderWarehouseAccess(
+  client: any,
+  input: {
+    tenantId: string;
+    userId: string;
+    salesOrderId: string;
+  },
+) {
+  const values: any[] = [input.tenantId, input.salesOrderId];
+
+  const where: string[] = [
+    "so.tenant_id = $1",
+    "so.id = $2::uuid",
+    "so.deleted_at IS NULL",
+  ];
+
+  // addTallyRecordAccessFilter({
+  //   where,
+  //   values,
+  //   userId: input.userId,
+  //   recordAlias: "so",
+  //   costCenterExpression: "so.cost_center_id",
+  //   tallyCompanyId: null,
+  // });
+
+  const { rows } = await client.query(
+    `
+    SELECT so.id
+    FROM sales_orders so
+    WHERE ${where.join(" AND ")}
+    LIMIT 1
+    `,
+    values,
+  );
+
+  return Boolean(rows.length);
+}
+
+async function assertWarehouseReceiptAccess(
+  client: any,
+  input: {
+    tenantId: string;
+    userId: string;
+    receiptId: string;
+  },
+) {
+  const values: any[] = [input.tenantId, input.receiptId];
+
+  const where: string[] = [
+    "wr.tenant_id = $1",
+    "wr.id = $2::uuid",
+    "po.deleted_at IS NULL",
+  ];
+
+  // addTallyRecordAccessFilter({
+  //   where,
+  //   values,
+  //   userId: input.userId,
+  //   recordAlias: "po",
+  //   costCenterExpression: "po.cost_center_id",
+  //   tallyCompanyId: null,
+  // });
+
+  const { rows } = await client.query(
+    `
+    SELECT wr.id
+    FROM warehouse_receipts wr
+    INNER JOIN purchase_orders po
+      ON po.id = wr.purchase_order_id
+     AND po.tenant_id = wr.tenant_id
+    WHERE ${where.join(" AND ")}
+    LIMIT 1
+    `,
+    values,
+  );
+
+  return Boolean(rows.length);
+}
+
+async function assertWarehouseDispatchAccess(
+  client: any,
+  input: {
+    tenantId: string;
+    userId: string;
+    dispatchId: string;
+  },
+) {
+  const values: any[] = [input.tenantId, input.dispatchId];
+
+  const where: string[] = [
+    "wd.tenant_id = $1",
+    "wd.id = $2::uuid",
+    "so.deleted_at IS NULL",
+  ];
+
+  // addTallyRecordAccessFilter({
+  //   where,
+  //   values,
+  //   userId: input.userId,
+  //   recordAlias: "so",
+  //   costCenterExpression: "so.cost_center_id",
+  //   tallyCompanyId: null,
+  // });
+
+  const { rows } = await client.query(
+    `
+    SELECT wd.id
+    FROM warehouse_dispatches wd
+    INNER JOIN sales_orders so
+      ON so.id = wd.sales_order_id
+     AND so.tenant_id = wd.tenant_id
+    WHERE ${where.join(" AND ")}
+    LIMIT 1
+    `,
+    values,
+  );
+
+  return Boolean(rows.length);
 }
 
 /**
@@ -138,6 +301,14 @@ export async function listWarehouseSalesOrdersHandler(
 ) {
   const tenantId = getTenantId(req);
 
+  const userId = getUserId(req);
+  const tallyCompanyId = req.query.tally_company_id
+    ? String(req.query.tally_company_id)
+    : "";
+  const costCenterId = req.query.cost_center_id
+    ? String(req.query.cost_center_id)
+    : "";
+
   const page = Number(req.query.page || 1);
   const limit = Number(req.query.limit || 10);
   const offset = (page - 1) * limit;
@@ -148,7 +319,23 @@ export async function listWarehouseSalesOrdersHandler(
   const dateTo = String(req.query.date_to || "").trim();
 
   const params: any[] = [tenantId];
-  let where = `WHERE so.tenant_id = $1 AND so.deleted_at IS NULL`;
+  const whereParts: string[] = ["so.tenant_id = $1", "so.deleted_at IS NULL"];
+
+  if (costCenterId) {
+    params.push(costCenterId);
+    whereParts.push(`so.cost_center_id = $${params.length}::uuid`);
+  }
+
+  // addTallyRecordAccessFilter({
+  //   where: whereParts,
+  //   values: params,
+  //   userId,
+  //   recordAlias: "so",
+  //   costCenterExpression: "so.cost_center_id",
+  //   tallyCompanyId: tallyCompanyId || null,
+  // });
+
+  let where = `WHERE ${whereParts.join(" AND ")}`;
 
   if (search) {
     params.push(`%${search}%`);
@@ -291,6 +478,14 @@ export async function listWarehousePurchaseOrdersHandler(
 ) {
   const tenantId = getTenantId(req);
 
+  const userId = getUserId(req);
+  const tallyCompanyId = req.query.tally_company_id
+    ? String(req.query.tally_company_id)
+    : "";
+  const costCenterId = req.query.cost_center_id
+    ? String(req.query.cost_center_id)
+    : "";
+
   const page = Number(req.query.page || 1);
   const limit = Number(req.query.limit || 10);
   const offset = (page - 1) * limit;
@@ -300,8 +495,27 @@ export async function listWarehousePurchaseOrdersHandler(
   const dateFrom = String(req.query.date_from || "").trim();
   const dateTo = String(req.query.date_to || "").trim();
 
+  const whereParts: string[] = ["po.tenant_id = $1", "po.deleted_at IS NULL"];
+
   const params: any[] = [tenantId];
-  let where = `WHERE po.tenant_id = $1 AND po.deleted_at IS NULL`;
+
+  // existing search/status/date filters yahi push karte rehna
+
+  if (costCenterId) {
+    params.push(costCenterId);
+    whereParts.push(`po.cost_center_id = $${params.length}::uuid`);
+  }
+
+  // addTallyRecordAccessFilter({
+  //   where: whereParts,
+  //   values: params,
+  //   userId,
+  //   recordAlias: "po",
+  //   costCenterExpression: "po.cost_center_id",
+  //   tallyCompanyId: tallyCompanyId || null,
+  // });
+
+  let where = `WHERE ${whereParts.join(" AND ")}`;
 
   if (search) {
     params.push(`%${search}%`);
@@ -469,7 +683,23 @@ export async function listWarehousePurchaseOrdersHandler(
  */
 export async function getPoForReceivingHandler(req: Request, res: Response) {
   const tenantId = getTenantId(req);
+  const userId = getUserId(req);
+
   const { id } = req.params;
+
+  const hasAccess = await assertPurchaseOrderWarehouseAccess(pool, {
+    tenantId,
+    userId,
+    purchaseOrderId: id,
+  });
+
+  if (!hasAccess) {
+    return res.status(404).json({
+      statusCode: 404,
+      message: "Purchase order not found",
+      data: null,
+    });
+  }
 
   const { rows } = await pool.query(
     `
@@ -566,7 +796,22 @@ export async function getPoForReceivingHandler(req: Request, res: Response) {
  */
 export async function getSoForDispatchHandler(req: Request, res: Response) {
   const tenantId = getTenantId(req);
+  const userId = getUserId(req);
   const { id } = req.params;
+
+  const hasAccess = await assertSalesOrderWarehouseAccess(pool, {
+    tenantId,
+    userId,
+    salesOrderId: id,
+  });
+
+  if (!hasAccess) {
+    return res.status(404).json({
+      statusCode: 404,
+      message: "Sales order not found",
+      data: null,
+    });
+  }
 
   const { rows } = await pool.query(
     `
@@ -663,6 +908,20 @@ export async function createPoReceiptHandler(req: Request, res: Response) {
 
   try {
     await client.query("BEGIN");
+    const hasAccess = await assertPurchaseOrderWarehouseAccess(client, {
+      tenantId,
+      userId,
+      purchaseOrderId: body.purchase_order_id,
+    });
+
+    if (!hasAccess) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Purchase order not found",
+        data: null,
+      });
+    }
 
     const receiptNumber = await generateNumber(
       client,
@@ -872,6 +1131,20 @@ export async function createSoDispatchHandler(req: Request, res: Response) {
 
   try {
     await client.query("BEGIN");
+    const hasAccess = await assertSalesOrderWarehouseAccess(client, {
+      tenantId,
+      userId,
+      salesOrderId: body.sales_order_id,
+    });
+
+    if (!hasAccess) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Sales order not found",
+        data: null,
+      });
+    }
 
     const dispatchNumber = await generateNumber(
       client,
@@ -1020,49 +1293,148 @@ export async function createSoDispatchHandler(req: Request, res: Response) {
 
 export async function updateReceiptStatusHandler(req: Request, res: Response) {
   const tenantId = getTenantId(req);
+  const userId = getUserId(req);
   const body = UpdateWarehouseStatusSchema.parse(req.body);
+  const { id } = req.params;
 
-  const { rows } = await pool.query(
-    `
-    UPDATE warehouse_receipts
-    SET
-      status = $1,
-      remarks = COALESCE($2, remarks),
-      updated_at = now()
-    WHERE tenant_id = $3 AND id = $4
-    RETURNING *
-    `,
-    [body.status, body.remarks, tenantId, req.params.id],
-  );
+  const client = await pool.connect();
 
-  if (!rows[0]) {
-    return res.status(404).json({ message: "Receipt not found" });
+  try {
+    await client.query("BEGIN");
+
+    const hasAccess = await assertWarehouseReceiptAccess(client, {
+      tenantId,
+      userId,
+      receiptId: id,
+    });
+
+    if (!hasAccess) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Receipt not found",
+        data: null,
+      });
+    }
+
+    const { rows } = await client.query(
+      `
+      UPDATE warehouse_receipts
+      SET
+        status = $1,
+        remarks = COALESCE($2, remarks),
+        updated_by = $3,
+        updated_at = now()
+      WHERE tenant_id = $4
+        AND id = $5::uuid
+      RETURNING *
+      `,
+      [body.status, body.remarks, userId, tenantId, id],
+    );
+
+    if (!rows[0]) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Receipt not found",
+        data: null,
+      });
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      statusCode: 200,
+      message: "Receipt status updated successfully",
+      data: rows[0],
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+
+    return res.status(500).json({
+      statusCode: 500,
+      message: error?.message || "Failed to update receipt status",
+      data: null,
+    });
+  } finally {
+    client.release();
   }
-
-  res.json({ message: "Receipt status updated", data: rows[0] });
 }
 
 export async function updateDispatchStatusHandler(req: Request, res: Response) {
   const tenantId = getTenantId(req);
+  const userId = getUserId(req);
   const body = UpdateWarehouseStatusSchema.parse(req.body);
+  const { id } = req.params;
 
-  const { rows } = await pool.query(
-    `
-    UPDATE warehouse_dispatches
-    SET
-      status = $1,
-      remarks = COALESCE($2, remarks),
-      delivered_at = CASE WHEN $1 = 'delivered' THEN now() ELSE delivered_at END,
-      updated_at = now()
-    WHERE tenant_id = $3 AND id = $4
-    RETURNING *
-    `,
-    [body.status, body.remarks, tenantId, req.params.id],
-  );
+  const client = await pool.connect();
 
-  if (!rows[0]) {
-    return res.status(404).json({ message: "Dispatch not found" });
+  try {
+    await client.query("BEGIN");
+
+    const hasAccess = await assertWarehouseDispatchAccess(client, {
+      tenantId,
+      userId,
+      dispatchId: id,
+    });
+
+    if (!hasAccess) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Dispatch not found",
+        data: null,
+      });
+    }
+
+    const { rows } = await client.query(
+      `
+      UPDATE warehouse_dispatches
+      SET
+        status = $1,
+        remarks = COALESCE($2, remarks),
+        delivered_at = CASE
+          WHEN $1 = 'delivered' THEN now()
+          ELSE delivered_at
+        END,
+        updated_by = $3,
+        updated_at = now()
+      WHERE tenant_id = $4
+        AND id = $5::uuid
+      RETURNING *
+      `,
+      [body.status, body.remarks, userId, tenantId, id],
+    );
+
+    if (!rows[0]) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        statusCode: 404,
+        message: "Dispatch not found",
+        data: null,
+      });
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      statusCode: 200,
+      message: "Dispatch status updated successfully",
+      data: rows[0],
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+
+    return res.status(500).json({
+      statusCode: 500,
+      message: error?.message || "Failed to update dispatch status",
+      data: null,
+    });
+  } finally {
+    client.release();
   }
-
-  res.json({ message: "Dispatch status updated", data: rows[0] });
 }

@@ -32,9 +32,11 @@ import purchaseOrderRouter from "./modules/purchase-orders/purchase-orders.route
 import quotesRouter from "./modules/quotes/quotes.routes";
 import rbacRouter from "./modules/rbac/rbac.routes";
 import salesOrdersRouter from "./modules/sales-orders/sales-orders.routes";
+import tallyCompaniesRouter from "./modules/tally-companies/tally-companies.routes";
 import tallyPerformanceRouter from "./modules/tally-performance/tallyPerformance.routes";
 import tallyRouter from "./modules/tally/tally.routes";
 import tasksRouter from "./modules/tasks/tasks.routes";
+import userCostCentersRouter from "./modules/user-cost-centers/user-cost-centers.routes";
 import usersRouter from "./modules/users/users.routes";
 import visitsRouter from "./modules/visits/visits.routes";
 import warehouseRouter from "./modules/warehouse/warehouse.routes";
@@ -95,6 +97,7 @@ export function createApp() {
   app.use("/v1/:slug/rbac", rbacRouter);
   // app.use("/v1/:slug/notifications", notificationsRouter());
   app.use("/v1/:slug/client-logs", clientLogsRouter());
+  app.use("/v1/:slug/user-cost-centers", userCostCentersRouter);
   app.use("/v1/:slug/users", usersRouter);
   app.use("/v1/:slug/organizations", organizationsRouter);
   app.use("/v1/:slug/contacts", contactsRouter);
@@ -123,6 +126,7 @@ export function createApp() {
   app.use("/v1/:slug/warehouse", warehouseRouter);
   app.use("/v1/:slug/cost-centers", costCentersRouter);
   app.use("/v1/:slug/outstandings", outstandingRouter);
+  app.use("/v1/:slug/tally-companies", tallyCompaniesRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
