@@ -9,6 +9,17 @@ export type RoleId = string;
 
 const RoleIdSchema = z.string().uuid("Valid role id is required");
 
+export const SetUserTargetSchema = z.object({
+  target_amount: z.coerce
+    .number()
+    .min(0, "Target amount must be 0 or greater")
+    .max(999999999999.99, "Target amount is too large"),
+});
+
+export const UpdateUserStatusSchema = z.object({
+  is_active: z.boolean(),
+});
+
 export type ListUsersParams = {
   tenantId: string;
   search?: string;
@@ -211,7 +222,7 @@ export const usersService = {
         u.last_name,
         u.phone_country_code,
         u.phone,
-
+u.target_amount,
         u.city AS city_id,
         u.state AS state_id,
         u.country AS country_id,
@@ -272,6 +283,7 @@ export const usersService = {
         u.id,
         u.tenant_id,
         u.email,
+        u.target_amount,
         u.name,
         COALESCE(
           STRING_AGG(DISTINCT r.name, ', ' ORDER BY r.name),
@@ -649,6 +661,238 @@ export const usersService = {
   },
 };
 
+export const updateUserStatusHandler = async (
+  req: any,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const tenantId = req.tenant?.id;
+    const { id } = req.params;
+
+    if (!tenantId) {
+      return res.status(400).json({
+        statusCode: 400,
+        message: "Tenant not resolved",
+        data: null,
+      });
+    }
+
+    const body = UpdateUserStatusSchema.parse(req.body);
+
+    const result = await pool.query(
+      `
+      UPDATE users
+      SET
+        is_active = $1,
+        updated_by = $2,
+        updated_at = now()
+      WHERE tenant_id = $3
+        AND id = $4
+        AND deleted_at IS NULL
+      RETURNING
+        id,
+        name,
+        email,
+        is_active,
+        updated_at
+      `,
+      [body.is_active, req.user?.id || null, tenantId, id],
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({
+        statusCode: 404,
+        message: "User not found",
+        data: null,
+      });
+    }
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: body.is_active
+        ? "User enabled successfully"
+        : "User disabled successfully",
+      data: result.rows[0],
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getMyTargetProgressHandler = async (
+  req: any,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const tenantId = getTenantId(req);
+
+    const userId =
+      (req as any).user?.id ||
+      (req as any).user?.user_id ||
+      (req as any).user?.sub ||
+      (req as any).userId ||
+      (req as any).user_id;
+
+    if (!tenantId || !userId) {
+      return res.status(400).json({
+        statusCode: 400,
+        message: "Tenant or user not resolved",
+        data: null,
+      });
+    }
+
+    const result = await pool.query(
+      `
+  SELECT
+    COALESCE(u.target_amount, 0) AS target_amount,
+
+    COALESCE((
+      SELECT
+        SUM(
+          CASE
+            WHEN COALESCE(so.cost_center_amount, 0) > 0
+              THEN so.cost_center_amount
+            ELSE COALESCE(so.total_amount, 0)
+          END
+        )
+      FROM sales_orders so
+      WHERE so.tenant_id = u.tenant_id
+        AND so.deleted_at IS NULL
+        AND COALESCE(so.status, '') NOT IN ('draft', 'cancelled')
+        AND (
+          (
+            COALESCE(so.source, 'crm') = 'crm'
+            AND so.assigned_to = u.id
+          )
+
+          OR
+
+          (
+            COALESCE(so.source, '') = 'tally'
+            AND EXISTS (
+              SELECT 1
+              FROM user_cost_centers ucc
+              INNER JOIN cost_centers cc
+                ON cc.tenant_id = ucc.tenant_id
+               AND cc.id = ucc.cost_center_id
+              WHERE ucc.tenant_id = u.tenant_id
+                AND ucc.user_id = u.id
+                AND ucc.is_active = true
+                AND ucc.deleted_at IS NULL
+                AND cc.status = 'active'
+                AND (
+                  so.cost_center_id = cc.id
+
+                  OR (
+                    NULLIF(TRIM(so.cost_center_guid), '') IS NOT NULL
+                    AND NULLIF(TRIM(cc.tally_guid), '') IS NOT NULL
+                    AND TRIM(so.cost_center_guid) = TRIM(cc.tally_guid)
+                  )
+
+                  OR (
+                    NULLIF(TRIM(so.cost_center_name), '') IS NOT NULL
+                    AND LOWER(TRIM(so.cost_center_name)) = LOWER(TRIM(cc.name))
+                  )
+                )
+            )
+          )
+        )
+    ), 0) AS achieved_amount
+
+  FROM users u
+  WHERE u.tenant_id = $1
+    AND u.id = $2
+    AND u.deleted_at IS NULL
+  LIMIT 1
+  `,
+      [tenantId, userId],
+    );
+
+    const row = result.rows[0];
+
+    const targetAmount = Number(row?.target_amount || 0);
+    const achievedAmount = Number(row?.achieved_amount || 0);
+    const remainingAmount = Math.max(targetAmount - achievedAmount, 0);
+
+    const progressPercent =
+      targetAmount > 0
+        ? Math.min(Math.round((achievedAmount / targetAmount) * 100), 100)
+        : 0;
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Target progress fetched successfully",
+      data: {
+        target_amount: targetAmount,
+        achieved_amount: achievedAmount,
+        remaining_amount: remainingAmount,
+        progress_percent: progressPercent,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const setUserTargetHandler = async (
+  req: any,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const tenantId = req.tenant?.id;
+    const { id } = req.params;
+
+    if (!tenantId) {
+      return res.status(400).json({
+        statusCode: 400,
+        message: "Tenant not resolved",
+        data: null,
+      });
+    }
+
+    const body = SetUserTargetSchema.parse(req.body);
+
+    const result = await pool.query(
+      `
+      UPDATE users
+      SET
+        target_amount = $1,
+        updated_by = $2,
+        updated_at = now()
+      WHERE tenant_id = $3
+        AND id = $4
+        AND deleted_at IS NULL
+      RETURNING
+        id,
+        name,
+        email,
+        target_amount,
+        updated_at
+      `,
+      [body.target_amount, req.user?.id || null, tenantId, id],
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({
+        statusCode: 404,
+        message: "User not found",
+        data: null,
+      });
+    }
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "User target updated successfully",
+      data: result.rows[0],
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export async function listUsersHandler(
   req: any,
   res: Response,
@@ -853,7 +1097,12 @@ export async function updateStatusHandler(
     );
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    res.json({ data: user });
+    res.json({
+      data: user,
+      message: "User status updated successfully",
+      statusCode: 200,
+      success: true,
+    });
   } catch (err: any) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({

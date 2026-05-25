@@ -7,6 +7,9 @@ import {
 } from "./tally.mapper";
 import {
   PullLedgersSchema,
+  PullOutstandingsSchema,
+  PullPurchaseOrdersSchema,
+  PullSalesOrdersSchema,
   PullStockItemsSchema,
   UpsertTallyConnectionSchema,
 } from "./tally.schema";
@@ -1868,6 +1871,12 @@ export async function pullTallyStockItems(input: {
     for (const row of input.records) {
       try {
         const mapped = mapTallyStockItemToProduct(row);
+        const tallyCompany = await resolveTallyCompany(
+          client,
+          input.tenantId,
+          row,
+          connection,
+        );
 
         const existingMapping = row.guid
           ? await client.query(
@@ -1913,6 +1922,7 @@ export async function pullTallyStockItems(input: {
       stock_on_hand = $19,
       available_for_sale = $20,
       updated_by = $21,
+      
       updated_at = NOW()
   WHERE id = $1
     AND tenant_id = $2
@@ -2092,6 +2102,26 @@ export async function pullTallyStockItems(input: {
             productId = productResult.rows[0].id;
           }
         }
+
+        await client.query(
+          `
+  UPDATE products
+  SET
+    tally_company_id = $3,
+    tally_company_guid = $4,
+    tally_company_name = $5,
+    updated_at = NOW()
+  WHERE tenant_id = $1
+    AND id = $2
+  `,
+          [
+            input.tenantId,
+            productId,
+            tallyCompany.id,
+            tallyCompany.tally_guid,
+            tallyCompany.name,
+          ],
+        );
 
         await upsertMapping(client, {
           tenantId: input.tenantId,
@@ -2965,15 +2995,16 @@ export async function pullTallyOutstandingsHandler(
     const tenantId = getTenantIdFromReq(req);
     const userId = getUserIdFromReq(req);
 
-    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+    const body = PullOutstandingsSchema.parse(req.body);
 
     const data = await pullTallyOutstandings({
       tenantId,
       userId,
-      records,
+      records: body.records || [],
     });
 
     res.json({
+      statusCode: 200,
       message: "Tally outstandings synced successfully",
       data,
     });
@@ -3032,31 +3063,49 @@ export async function pullTallyCostCenters(input: {
 
         const tallyGuid = row.guid ? String(row.guid).trim() : null;
 
+        const connection = await getTallyConnection(input.tenantId);
+
+        const tallyCompany = await resolveTallyCompany(
+          client,
+          input.tenantId,
+          row,
+          connection,
+        );
+
         const { rows } = await client.query(
           `
-          INSERT INTO cost_centers (
-            tenant_id,
-            tally_guid,
-            name,
-            parent_name,
-            description,
-            status,
-            created_at,
-            updated_at
-          )
-          VALUES (
-            $1, $2, $3, $4, $5, 'active', now(), now()
-          )
-          ON CONFLICT (tenant_id, tally_guid)
-          DO UPDATE SET
-            name = EXCLUDED.name,
-            parent_name = EXCLUDED.parent_name,
-            description = EXCLUDED.description,
-            updated_at = now()
-          RETURNING id
-          `,
+  INSERT INTO cost_centers (
+    tenant_id,
+    tally_company_id,
+    tally_company_guid,
+    tally_company_name,
+    tally_guid,
+    name,
+    parent_name,
+    description,
+    status,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), now()
+  )
+  ON CONFLICT (tenant_id, tally_guid)
+  DO UPDATE SET
+    tally_company_id = EXCLUDED.tally_company_id,
+    tally_company_guid = EXCLUDED.tally_company_guid,
+    tally_company_name = EXCLUDED.tally_company_name,
+    name = EXCLUDED.name,
+    parent_name = EXCLUDED.parent_name,
+    description = EXCLUDED.description,
+    updated_at = now()
+  RETURNING id
+  `,
           [
             input.tenantId,
+            tallyCompany.id,
+            tallyCompany.tally_guid,
+            tallyCompany.name,
             tallyGuid || name,
             name,
             row.parent || row.category || null,
@@ -3171,17 +3220,18 @@ export async function pullTallyPurchaseOrdersHandler(
     const tenantId = getTenantIdFromReq(req);
     const userId = getUserIdFromReq(req);
 
-    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+    const body = PullPurchaseOrdersSchema.parse(req.body) as any;
 
-    console.log("[PURCHASE ORDER RAW BODY SAMPLE]", records.slice(0, 1));
+    console.log("[PURCHASE ORDER RAW BODY SAMPLE]", body.records.slice(0, 1));
 
     const data = await pullTallyPurchaseOrders({
       tenantId,
       userId,
-      records,
+      records: body.records || [],
     });
 
     res.json({
+      statusCode: 200,
       message: "Tally purchase orders synced successfully",
       data,
     });
@@ -3199,17 +3249,18 @@ export async function pullTallySalesOrdersHandler(
     const tenantId = getTenantIdFromReq(req);
     const userId = getUserIdFromReq(req);
 
-    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+    const body = PullSalesOrdersSchema.parse(req.body) as any;
 
-    console.log("[SALES ORDER RAW BODY SAMPLE]", records.slice(0, 1));
+    console.log("[SALES ORDER RAW BODY SAMPLE]", body.records.slice(0, 1));
 
     const data = await pullTallySalesOrders({
       tenantId,
       userId,
-      records,
+      records: body.records || [],
     });
 
     res.json({
+      statusCode: 200,
       message: "Tally sales orders synced successfully",
       data,
     });

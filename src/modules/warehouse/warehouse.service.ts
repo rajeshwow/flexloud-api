@@ -458,11 +458,20 @@ export async function listWarehouseSalesOrdersHandler(
     [...params, limit, offset],
   );
 
+  const statusStats = await getSalesOrderStatusStats({
+    tenantId,
+    search,
+    dateFrom,
+    dateTo,
+    costCenterId,
+  });
+
   res.json({
     data: rows,
     total: Number(rows[0]?.total || 0),
     page,
     limit,
+    status_stats: statusStats,
   });
 }
 
@@ -670,11 +679,20 @@ export async function listWarehousePurchaseOrdersHandler(
     [...params, limit, offset],
   );
 
+  const statusStats = await getPurchaseOrderStatusStats({
+    tenantId,
+    search,
+    dateFrom,
+    dateTo,
+    costCenterId,
+  });
+
   res.json({
     data: rows,
     total: Number(rows[0]?.total || 0),
     page,
     limit,
+    status_stats: statusStats,
   });
 }
 
@@ -897,6 +915,126 @@ export async function getSoForDispatchHandler(req: Request, res: Response) {
   }
 
   res.json(rows[0]);
+}
+
+async function getSalesOrderStatusStats(input: {
+  tenantId: string;
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  costCenterId?: string;
+}) {
+  const params: any[] = [input.tenantId];
+  const whereParts: string[] = ["so.tenant_id = $1", "so.deleted_at IS NULL"];
+
+  if (input.costCenterId) {
+    params.push(input.costCenterId);
+    whereParts.push(`so.cost_center_id = $${params.length}::uuid`);
+  }
+
+  if (input.search) {
+    params.push(`%${input.search}%`);
+    whereParts.push(`(
+      COALESCE(so.voucher_number, '') ILIKE $${params.length}
+      OR COALESCE(so.customer_name, '') ILIKE $${params.length}
+      OR COALESCE(so.customer_gst, '') ILIKE $${params.length}
+      OR COALESCE(so.reference_number, '') ILIKE $${params.length}
+      OR EXISTS (
+        SELECT 1
+        FROM sales_order_items soi2
+        WHERE soi2.sales_order_id = so.id
+        AND (
+          COALESCE(soi2.item_name, '') ILIKE $${params.length}
+          OR COALESCE(soi2.item_code, '') ILIKE $${params.length}
+        )
+      )
+    )`);
+  }
+
+  if (input.dateFrom) {
+    params.push(input.dateFrom);
+    whereParts.push(`so.voucher_date >= $${params.length}::date`);
+  }
+
+  if (input.dateTo) {
+    params.push(input.dateTo);
+    whereParts.push(`so.voucher_date <= $${params.length}::date`);
+  }
+
+  const { rows } = await pool.query(
+    `
+    SELECT
+      COALESCE(so.status, 'unknown') AS status,
+      COUNT(*)::int AS count
+    FROM sales_orders so
+    WHERE ${whereParts.join(" AND ")}
+    GROUP BY COALESCE(so.status, 'unknown')
+    ORDER BY COALESCE(so.status, 'unknown')
+    `,
+    params,
+  );
+
+  return rows;
+}
+
+async function getPurchaseOrderStatusStats(input: {
+  tenantId: string;
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  costCenterId?: string;
+}) {
+  const params: any[] = [input.tenantId];
+  const whereParts: string[] = ["po.tenant_id = $1", "po.deleted_at IS NULL"];
+
+  if (input.costCenterId) {
+    params.push(input.costCenterId);
+    whereParts.push(`po.cost_center_id = $${params.length}::uuid`);
+  }
+
+  if (input.search) {
+    params.push(`%${input.search}%`);
+    whereParts.push(`(
+      COALESCE(po.voucher_number, '') ILIKE $${params.length}
+      OR COALESCE(po.supplier_name, '') ILIKE $${params.length}
+      OR COALESCE(po.supplier_gst, '') ILIKE $${params.length}
+      OR COALESCE(po.reference_number, '') ILIKE $${params.length}
+      OR EXISTS (
+        SELECT 1
+        FROM purchase_order_items poi2
+        WHERE poi2.purchase_order_id = po.id
+        AND (
+          COALESCE(poi2.item_name, '') ILIKE $${params.length}
+          OR COALESCE(poi2.item_code, '') ILIKE $${params.length}
+        )
+      )
+    )`);
+  }
+
+  if (input.dateFrom) {
+    params.push(input.dateFrom);
+    whereParts.push(`po.voucher_date >= $${params.length}::date`);
+  }
+
+  if (input.dateTo) {
+    params.push(input.dateTo);
+    whereParts.push(`po.voucher_date <= $${params.length}::date`);
+  }
+
+  const { rows } = await pool.query(
+    `
+    SELECT
+      COALESCE(po.status, 'unknown') AS status,
+      COUNT(*)::int AS count
+    FROM purchase_orders po
+    WHERE ${whereParts.join(" AND ")}
+    GROUP BY COALESCE(po.status, 'unknown')
+    ORDER BY COALESCE(po.status, 'unknown')
+    `,
+    params,
+  );
+
+  return rows;
 }
 
 export async function createPoReceiptHandler(req: Request, res: Response) {
