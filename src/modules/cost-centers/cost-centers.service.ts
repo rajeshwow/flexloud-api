@@ -453,7 +453,11 @@ export async function getCostCenterPerformanceHandler(req: any, res: Response) {
       max_amount,
       start_date,
       end_date,
+      from_date,
+      to_date,
     } = req.query;
+    const effectiveStartDate = start_date || from_date;
+    const effectiveEndDate = end_date || to_date;
 
     const params: any[] = [tenantId];
 
@@ -472,7 +476,13 @@ export async function getCostCenterPerformanceHandler(req: any, res: Response) {
       filters.push(`tout.ledger_name ILIKE $${params.length}`);
     }
 
-    filters.push(...buildDateFilter({ start_date, end_date }, params, "tout"));
+    filters.push(
+      ...buildDateFilter(
+        { start_date: effectiveStartDate, end_date: effectiveEndDate },
+        params,
+        "tout",
+      ),
+    );
 
     addTallyRecordAccessFilter({
       where: filters,
@@ -555,16 +565,26 @@ export async function getCostCenterPerformanceHandler(req: any, res: Response) {
         ) AS payable,
 
         SUM(
-          CASE 
-            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
-            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
-            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
-            THEN -ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
-            ELSE 0
-          END
-        ) AS net_business,
+  CASE 
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+    THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+    THEN -ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+    ELSE 0
+  END
+) AS net_business,
 
-        MAX(tout.synced_at) AS last_synced_at
+SUM(
+  CASE 
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+    THEN ABS(COALESCE(tout.pending_amount, 0))
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+    THEN -ABS(COALESCE(tout.pending_amount, 0))
+    ELSE 0
+  END
+) AS net_outstanding,
+
+MAX(tout.synced_at) AS last_synced_at
 
       FROM tally_outstandings tout
       WHERE ${filters.join(" AND ")}
@@ -590,6 +610,7 @@ export async function getCostCenterPerformanceHandler(req: any, res: Response) {
         receivable: toNumber(row.receivable),
         payable: toNumber(row.payable),
         net_business: toNumber(row.net_business),
+        net_outstanding: toNumber(row.net_outstanding),
         last_synced_at: row.last_synced_at,
       })),
     });
@@ -716,7 +737,19 @@ export async function getCostCenterPerformanceLedgersHandler(
     const userId = getUserIdFromRequest(req);
     const { id } = req.params;
 
-    const { tally_company_id, start_date, end_date } = req.query;
+    const {
+      tally_company_id,
+      cost_center_id,
+      ledger_name,
+      min_amount,
+      max_amount,
+      start_date,
+      end_date,
+      from_date,
+      to_date,
+    } = req.query;
+    const effectiveStartDate = start_date || from_date;
+    const effectiveEndDate = end_date || to_date;
 
     const params: any[] = [tenantId, id];
 
@@ -728,8 +761,13 @@ export async function getCostCenterPerformanceLedgersHandler(
   )`,
     ];
 
-    filters.push(...buildDateFilter({ start_date, end_date }, params, "tout"));
-
+    filters.push(
+      ...buildDateFilter(
+        { start_date: effectiveStartDate, end_date: effectiveEndDate },
+        params,
+        "tout",
+      ),
+    );
     addTallyRecordAccessFilter({
       where: filters,
       values: params,
@@ -778,14 +816,24 @@ export async function getCostCenterPerformanceLedgersHandler(
         ) AS payable,
 
         SUM(
-          CASE 
-            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
-            THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
-            WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
-            THEN -ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
-            ELSE 0
-          END
-        ) AS net_business
+  CASE 
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+    THEN ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+    THEN -ABS(COALESCE(tout.cost_center_amount, tout.pending_amount, tout.bill_amount, 0))
+    ELSE 0
+  END
+) AS net_business,
+
+SUM(
+  CASE 
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'receivable'
+    THEN ABS(COALESCE(tout.pending_amount, 0))
+    WHEN LOWER(COALESCE(tout.bill_type, '')) = 'payable'
+    THEN -ABS(COALESCE(tout.pending_amount, 0))
+    ELSE 0
+  END
+) AS net_outstanding
 
       FROM tally_outstandings tout
       WHERE ${filters.join(" AND ")}
@@ -806,6 +854,7 @@ export async function getCostCenterPerformanceLedgersHandler(
         receivable: toNumber(row.receivable),
         payable: toNumber(row.payable),
         net_business: toNumber(row.net_business),
+        net_outstanding: toNumber(row.net_outstanding),
       })),
     });
   } catch (error: any) {
