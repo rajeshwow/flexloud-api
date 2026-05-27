@@ -39,7 +39,7 @@ export async function resolveTenant(
     // 1) Prefer tenant id from header
     if (headerTenantId) {
       const { rows } = await pool.query(
-        `SELECT id, slug, name FROM tenants WHERE id = $1 LIMIT 1`,
+        `SELECT id, slug, name FROM public.tenants WHERE id = $1 LIMIT 1`,
         [headerTenantId],
       );
 
@@ -68,7 +68,7 @@ export async function resolveTenant(
     }
 
     const { rows } = await pool.query(
-      `SELECT id, slug, name FROM tenants WHERE slug = $1 LIMIT 1`,
+      `SELECT id, slug, name FROM public.tenants WHERE slug = $1 LIMIT 1`,
       [slug],
     );
 

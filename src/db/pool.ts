@@ -9,7 +9,6 @@ export const pool = new Pool({
   password: env.PG_PASSWORD,
   ssl: env.PG_SSLMODE === "require" ? { rejectUnauthorized: false } : undefined,
   max: 15,
-  options: "-c search_path=public",
 });
 pool.on("connect", () => {
   console.log("✅ PostgreSQL connected");
