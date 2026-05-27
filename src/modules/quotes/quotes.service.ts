@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { NextFunction, Request, Response } from "express";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
+import { enqueueQuoteAssignedNotification } from "../notifications/notifications.assignment";
 
 function toNumber(value: any, fallback = 0) {
   const num = Number(value);
@@ -850,6 +851,18 @@ export async function updateQuoteHandler(
 ) {
   const client = await pool.connect();
 
+  let assignmentMailPayload: null | {
+    tenantId: string;
+    quoteId: string;
+    assignedTo: string;
+    title?: string | null;
+    quoteNumber?: string | null;
+    companyName?: string | null;
+    grandTotal?: string | number | null;
+    assignedBy?: string | null;
+    sendInstantly?: boolean;
+  } = null;
+
   try {
     const tenantId = getTenantId(req);
     const userId = req.user?.sub;
@@ -912,20 +925,23 @@ export async function updateQuoteHandler(
 
     const existing = await client.query(
       `
-  SELECT
-    id,
-    title,
-    quote_stage,
-    assigned_to,
-    grand_total,
-    valid_until,
-    quotation_date
-  FROM quotes
-  WHERE id = $1
-    AND tenant_id = $2
-    AND deleted_at IS NULL
-  LIMIT 1
-  `,
+      SELECT
+        id,
+        tenant_id,
+        quote_number,
+        title,
+        quote_stage,
+        assigned_to,
+        grand_total,
+        valid_until,
+        quotation_date,
+        company_name
+      FROM quotes
+      WHERE id = $1
+        AND tenant_id = $2
+        AND deleted_at IS NULL
+      LIMIT 1
+      `,
       [id, tenantId],
     );
 
@@ -935,6 +951,14 @@ export async function updateQuoteHandler(
         message: "Quote not found",
       });
     }
+
+    const oldQuote = existing.rows[0];
+    const oldAssignedTo = oldQuote.assigned_to
+      ? String(oldQuote.assigned_to)
+      : null;
+    const newAssignedTo = toNull(assigned_to)
+      ? String(toNull(assigned_to))
+      : null;
 
     await client.query(
       `
@@ -994,6 +1018,7 @@ export async function updateQuoteHandler(
         updated_at = NOW()
       WHERE id = $43
         AND tenant_id = $44
+        AND deleted_at IS NULL
       `,
       [
         title,
@@ -1063,9 +1088,8 @@ export async function updateQuoteHandler(
 
     await insertQuoteItems(client, tenantId, id, line_items);
 
-    const oldQuote = existing.rows[0];
-
     const changes: any[] = [];
+
     if (oldQuote.title !== title) {
       changes.push({
         field: "title",
@@ -1088,14 +1112,16 @@ export async function updateQuoteHandler(
       });
     }
 
-    if (oldQuote.assigned_to !== assigned_to) {
+    if (
+      String(oldQuote.assigned_to || "") !== String(toNull(assigned_to) || "")
+    ) {
       changes.push({
         field: "assigned_to",
         label: "Assigned To",
         old_value: oldQuote.assigned_to,
-        new_value: assigned_to,
+        new_value: toNull(assigned_to),
         old_display: oldQuote.assigned_to || "-",
-        new_display: assigned_to || "-",
+        new_display: toNull(assigned_to) || "-",
       });
     }
 
@@ -1128,11 +1154,38 @@ export async function updateQuoteHandler(
       },
     });
 
+    if (
+      newAssignedTo &&
+      String(oldAssignedTo || "") !== String(newAssignedTo || "")
+    ) {
+      assignmentMailPayload = {
+        tenantId,
+        quoteId: id,
+        assignedTo: newAssignedTo,
+        title: title || oldQuote.title,
+        quoteNumber: oldQuote.quote_number,
+        companyName: company_name || oldQuote.company_name,
+        grandTotal: toNumber(grand_total),
+        assignedBy: userId || null,
+        sendInstantly: true,
+      };
+    }
+
     await client.query("COMMIT");
 
-    res.json({
+    if (assignmentMailPayload) {
+      try {
+        await enqueueQuoteAssignedNotification(assignmentMailPayload);
+      } catch (mailError) {
+        console.error("Quote assignment mail failed:", mailError);
+      }
+    }
+
+    return res.json({
       success: true,
-      message: "Quote updated successfully",
+      message: assignmentMailPayload
+        ? "Quote updated successfully and assignment mail triggered"
+        : "Quote updated successfully",
       id,
     });
   } catch (err) {

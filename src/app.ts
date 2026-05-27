@@ -24,6 +24,7 @@ import leadsRouter from "./modules/leads/leads.route";
 import leaveRouter from "./modules/leaves/leave.routes";
 import masterRouter from "./modules/masters/masters.routes";
 import myDayRouter from "./modules/my-day/my-day.routes";
+import notificationsRouter from "./modules/notifications/notifications.routes";
 import opportunitiesRouter from "./modules/opportunities/opportunities.routes";
 import organizationsRouter from "./modules/organizations/organizations.routes";
 import outstandingRouter from "./modules/outstandings/outstandings.routes";
@@ -127,6 +128,7 @@ export function createApp() {
   app.use("/v1/:slug/cost-centers", costCentersRouter);
   app.use("/v1/:slug/outstandings", outstandingRouter);
   app.use("/v1/:slug/tally-companies", tallyCompaniesRouter);
+  app.use("/v1/:slug/notifications", notificationsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

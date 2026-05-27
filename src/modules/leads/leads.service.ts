@@ -6,6 +6,7 @@ import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 import { createActivityLog } from "../activity/activity.service";
 import { buildLeadInsights } from "../ai-insights/ai-insights.service";
+import { enqueueLeadAssignedNotification } from "../notifications/notifications.assignment";
 import {
   CreateLeadSchema,
   GetLeadsSchema,
@@ -884,6 +885,25 @@ export const leadsService = {
         client,
       );
 
+      const oldAssignedTo = normalizeForCompare(existingLead.assigned_to);
+      const newAssignedTo = normalizeForCompare(updatedLead.assigned_to);
+
+      if (newAssignedTo && oldAssignedTo !== newAssignedTo) {
+        await enqueueLeadAssignedNotification({
+          tenantId: input.tenantId,
+          leadId: updatedLead.id,
+          assignedTo: String(newAssignedTo),
+          leadName:
+            `${updatedLead.first_name ?? ""} ${updatedLead.last_name ?? ""}`.trim(),
+          companyName: updatedLead.organization_name,
+          status:
+            updatedLead?.status_label || updatedLead?.status_value || null,
+          assignedBy: input.updatedBy,
+          isReassigned: Boolean(oldAssignedTo),
+          sendInstantly: true,
+        });
+      }
+
       await client.query("COMMIT");
       return await getLeadByIdInternal(pool, input.tenantId, updatedLead.id);
     } catch (error) {
@@ -926,6 +946,20 @@ export async function createLeadHandler(
       createdBy: userId,
       updatedBy: userId,
     } as CreateLeadInput);
+
+    if (lead.assigned_to) {
+      await enqueueLeadAssignedNotification({
+        tenantId: tenantId,
+        leadId: lead.id,
+        assignedTo: lead.assigned_to,
+        leadName: `${lead.first_name ?? ""} ${lead.last_name ?? ""}`.trim(),
+        companyName: lead.organization_name,
+        status: lead?.status_label || lead?.status_value || null,
+        assignedBy: userId,
+        isReassigned: false,
+        sendInstantly: true,
+      });
+    }
 
     return res.status(201).json({
       message: "Lead created successfully",
