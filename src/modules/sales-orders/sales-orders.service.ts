@@ -448,10 +448,12 @@ export const createSalesOrderHandler = async (req: Request, res: Response) => {
   organization_id,
   contact_id,
   assigned_to,
-  quote_id
+  quote_id,
+  source,
+  sync_status
 )
 VALUES (
-  $1,$2,COALESCE($3::date, CURRENT_DATE),$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13
+   $1,$2,COALESCE($3::date, CURRENT_DATE),$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15
 )
       RETURNING
         *,
@@ -484,6 +486,8 @@ VALUES (
         payload.contact_id || null,
         payload.assigned_to || null,
         payload.quote_id || null,
+        payload.source || "crm",
+        payload.sync_status || "pending",
       ],
     );
 

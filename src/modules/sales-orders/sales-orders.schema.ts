@@ -39,6 +39,11 @@ export const CreateSalesOrderSchema = z.object({
   notes: z.string().optional().nullable(),
   terms: z.string().optional().nullable(),
   reference_number: z.string().optional().nullable(),
+  source: z.enum(["crm", "tally"]).optional().default("crm"),
+  sync_status: z
+    .enum(["pending", "pushed", "synced", "failed"])
+    .optional()
+    .default("pending"),
 
   items: z.array(SalesOrderItemSchema).min(1, "At least one item is required"),
 });

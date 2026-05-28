@@ -123,6 +123,15 @@ type TallyVoucherPayload = {
   partyName?: string | null;
   ledgerName?: string | null;
   referenceNumber?: string | null;
+  voucherGuid?: string | null;
+  voucher_guid?: string | null;
+
+  basicOrderRef?: string | null;
+  basic_order_ref?: string | null;
+  orderRef?: string | null;
+  order_ref?: string | null;
+  basicBuyerOrderNo?: string | null;
+  basic_buyer_order_no?: string | null;
   referenceDate?: string | null;
   narration?: string | null;
   totalAmount?: number | string | null;
@@ -174,6 +183,25 @@ function cleanText(value: any) {
   if (value === null || value === undefined) return null;
   const v = String(value).trim();
   return v || null;
+}
+
+function normalizeRef(value: any) {
+  const text = cleanText(value);
+  if (!text) return null;
+
+  return text
+    .replace(/^crm\s*so\s*no\s*[:#-]?\s*/i, "")
+    .replace(/^sales\s*order\s*[:#-]?\s*/i, "")
+    .trim();
+}
+
+function pickFirstText(...values: any[]) {
+  for (const value of values) {
+    const text = cleanText(value);
+    if (text) return text;
+  }
+
+  return null;
 }
 
 function normalizeDate(value: any) {
@@ -2270,7 +2298,24 @@ async function pullTallyVouchers(input: {
 
         const poDate = isPO ? voucherDate : null;
         const soDate = !isPO ? voucherDate : null;
-        const referenceNumber = cleanText(row.referenceNumber);
+        const tallyVoucherGuid = pickFirstText(
+          (row as any).voucherGuid,
+          (row as any).voucher_guid,
+          row.guid,
+        );
+
+        const referenceNumber = normalizeRef(
+          pickFirstText(
+            row.referenceNumber,
+            (row as any).basicOrderRef,
+            (row as any).basic_order_ref,
+            (row as any).orderRef,
+            (row as any).order_ref,
+            (row as any).basicBuyerOrderNo,
+            (row as any).basic_buyer_order_no,
+          ),
+        );
+
         const totalAmount = toNumber(row.totalAmount ?? row.amount);
         const status = cleanText(row.status) || "draft";
 
@@ -2307,15 +2352,41 @@ async function pullTallyVouchers(input: {
   SELECT id
   FROM ${headerTable}
   WHERE tenant_id = $1
-    AND tally_company_id = $4::uuid
+    AND deleted_at IS NULL
     AND (
-      ($2::text IS NOT NULL AND tally_guid = $2)
+      (
+        $2::text IS NOT NULL
+        AND (
+          tally_guid = $2
+          ${isPO ? "" : "OR voucher_guid = $2"}
+        )
+      )
       OR voucher_number = $3
+      OR ($5::text IS NOT NULL AND reference_number = $5)
+      OR ($5::text IS NOT NULL AND voucher_number = $5)
+      ${isPO ? "" : "OR ($6::text IS NOT NULL AND tally_voucher_number = $6)"}
     )
+  ORDER BY
+    CASE
+      WHEN $2::text IS NOT NULL AND tally_guid = $2 THEN 1
+      ${isPO ? "" : "WHEN $2::text IS NOT NULL AND voucher_guid = $2 THEN 2"}
+      WHEN $5::text IS NOT NULL AND voucher_number = $5 THEN 3
+      WHEN $5::text IS NOT NULL AND reference_number = $5 THEN 4
+      ${isPO ? "" : "WHEN $6::text IS NOT NULL AND tally_voucher_number = $6 THEN 5"}
+      WHEN voucher_number = $3 THEN 6
+      ELSE 99
+    END
   LIMIT 1
   FOR UPDATE
   `,
-          [input.tenantId, tallyGuid, voucherNo, tallyCompany.id],
+          [
+            input.tenantId,
+            tallyVoucherGuid || tallyGuid,
+            voucherNo,
+            tallyCompany.id,
+            referenceNumber,
+            voucherNo,
+          ],
         );
 
         if (existingOrder.rowCount) {
@@ -2376,11 +2447,16 @@ async function pullTallyVouchers(input: {
   UPDATE sales_orders
   SET
     tally_guid = COALESCE($3, tally_guid),
-    voucher_number = $4,
+    voucher_guid = COALESCE($3, voucher_guid),
+    tally_voucher_number = $4,
     voucher_date = COALESCE($5, voucher_date),
     so_date = COALESCE($5, so_date),
     customer_name = $6,
     reference_number = $7,
+    source = COALESCE(source, 'crm'),
+    sync_status = 'synced',
+    tally_entry_status = 'created',
+    last_synced_from_tally_at = NOW(),
     total_amount = $8,
     status = $9,
     raw_tally_data = $10,
@@ -2402,7 +2478,7 @@ async function pullTallyVouchers(input: {
               [
                 orderId,
                 input.tenantId,
-                tallyGuid,
+                tallyVoucherGuid || tallyGuid,
                 voucherNo,
                 voucherDate,
                 partyName,
@@ -2490,11 +2566,17 @@ async function pullTallyVouchers(input: {
     tally_company_guid,
     tally_company_name,
     tally_guid,
+    voucher_guid,
     voucher_number,
+    tally_voucher_number,
     voucher_date,
     so_date,
     customer_name,
     reference_number,
+    source,
+    sync_status,
+    tally_entry_status,
+    last_synced_from_tally_at,
     total_amount,
     status,
     raw_tally_data,
@@ -2511,7 +2593,9 @@ async function pullTallyVouchers(input: {
   )
   VALUES
   (
-    $1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW()
+    $1,$2,$3,$4,$5,$5,$6,$6,$7,$7,$8,$9,
+    'tally','synced','created',NOW(),
+    $10,$11,$12,$13,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW()
   )
   RETURNING id
   `,
@@ -2520,7 +2604,7 @@ async function pullTallyVouchers(input: {
                 tallyCompany.id,
                 tallyCompany.tally_guid,
                 tallyCompany.name,
-                tallyGuid,
+                tallyVoucherGuid || tallyGuid,
                 voucherNo,
                 voucherDate,
                 partyName,
