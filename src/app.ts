@@ -8,8 +8,10 @@ import { requireAuth } from "./common/auth";
 import { resolveTenant } from "./common/tenant";
 import { env } from "./config/env";
 
+import { requireSuperAdmin } from "./middlewares/requireSuperAdmin";
 import activityRouter from "./modules/activity/activity.routes";
-import tanentRouter from "./modules/admin/tenants.routes";
+import adminAuthRouter from "./modules/admin-auth/admin-auth.routes";
+import adminTenantsRouter from "./modules/admin-tenants/admin-tenants.routes";
 import aiAssistantRouter from "./modules/ai-assistant/ai-assistant.routes";
 import aiInsightsRouter from "./modules/ai-insights/ai-insights.routes";
 import attendanceRouter from "./modules/attendance/attendance.routes";
@@ -32,6 +34,7 @@ import productsRouter from "./modules/products/products.routes";
 import purchaseOrderRouter from "./modules/purchase-orders/purchase-orders.routes";
 import quotesRouter from "./modules/quotes/quotes.routes";
 import rbacRouter from "./modules/rbac/rbac.routes";
+import reportsRouter from "./modules/reports/reports.routes";
 import salesOrdersRouter from "./modules/sales-orders/sales-orders.routes";
 import tallyCompaniesRouter from "./modules/tally-companies/tally-companies.routes";
 import tallyPerformanceRouter from "./modules/tally-performance/tallyPerformance.routes";
@@ -84,7 +87,15 @@ export function createApp() {
   /**
    * Public / admin routes
    */
-  app.use("/v1/admin", tanentRouter);
+  app.use("/v1/admin/auth", adminAuthRouter);
+
+  // app.use("/v1/admin", tanentRouter);
+  app.use(
+    "/v1/admin/tenants",
+    requireAuth,
+    requireSuperAdmin,
+    adminTenantsRouter,
+  );
   app.use("/v1/:slug/auth", resolveTenant, authRouter);
   app.use("/v1/:slug/tally", resolveTenant, tallyRouter);
 
@@ -129,6 +140,7 @@ export function createApp() {
   app.use("/v1/:slug/outstandings", outstandingRouter);
   app.use("/v1/:slug/tally-companies", tallyCompaniesRouter);
   app.use("/v1/:slug/notifications", notificationsRouter);
+  app.use("/v1/:slug/reports", reportsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

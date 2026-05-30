@@ -2,9 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import { getTenantId } from "../common/tenant";
 import { pool } from "../db/pool";
 
-type Role = "ADMIN" | "MANAGER" | "AGENT";
-const Roles: Role[] = ["ADMIN", "MANAGER", "AGENT"];
-const isRole = (v: any): v is Role => Roles.includes(v);
+type Role = string;
 
 export async function attachUserContext(
   req: Request,
@@ -41,9 +39,9 @@ export async function attachUserContext(
       throw Object.assign(new Error("User inactive"), { statusCode: 403 });
     }
 
-    if (!isRole(u.role)) {
-      throw Object.assign(new Error("Invalid role"), { statusCode: 500 });
-    }
+    // if (!isRole(u.role)) {
+    //   throw Object.assign(new Error("Invalid role"), { statusCode: 500 });
+    // }
 
     req.user = {
       ...(req.user as any),

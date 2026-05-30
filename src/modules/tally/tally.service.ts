@@ -2362,17 +2362,17 @@ async function pullTallyVouchers(input: {
         )
       )
       OR voucher_number = $3
-      OR ($5::text IS NOT NULL AND reference_number = $5)
-      OR ($5::text IS NOT NULL AND voucher_number = $5)
-      ${isPO ? "" : "OR ($6::text IS NOT NULL AND tally_voucher_number = $6)"}
+      OR ($4::text IS NOT NULL AND reference_number = $4)
+      OR ($4::text IS NOT NULL AND voucher_number = $4)
+      ${isPO ? "" : "OR ($5::text IS NOT NULL AND tally_voucher_number = $5)"}
     )
   ORDER BY
     CASE
       WHEN $2::text IS NOT NULL AND tally_guid = $2 THEN 1
       ${isPO ? "" : "WHEN $2::text IS NOT NULL AND voucher_guid = $2 THEN 2"}
-      WHEN $5::text IS NOT NULL AND voucher_number = $5 THEN 3
-      WHEN $5::text IS NOT NULL AND reference_number = $5 THEN 4
-      ${isPO ? "" : "WHEN $6::text IS NOT NULL AND tally_voucher_number = $6 THEN 5"}
+      WHEN $4::text IS NOT NULL AND voucher_number = $4 THEN 3
+      WHEN $4::text IS NOT NULL AND reference_number = $4 THEN 4
+      ${isPO ? "" : "WHEN $5::text IS NOT NULL AND tally_voucher_number = $5 THEN 5"}
       WHEN voucher_number = $3 THEN 6
       ELSE 99
     END
@@ -2383,7 +2383,6 @@ async function pullTallyVouchers(input: {
             input.tenantId,
             tallyVoucherGuid || tallyGuid,
             voucherNo,
-            tallyCompany.id,
             referenceNumber,
             voucherNo,
           ],

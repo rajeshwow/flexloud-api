@@ -162,6 +162,18 @@ export async function bootstrapTenant(
         );
       }
     }
+    await client.query(
+      `
+  UPDATE tenants
+  SET
+    is_bootstrapped = true,
+    bootstrapped_at = now(),
+    bootstrap_error = NULL,
+    updated_at = now()
+  WHERE id = $1
+  `,
+      [data.tenantId],
+    );
 
     await client.query("COMMIT");
 
