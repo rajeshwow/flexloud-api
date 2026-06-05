@@ -27,6 +27,12 @@ const schema = z.object({
   JWT_ISSUER: z.string(),
   JWT_AUDIENCE: z.string(),
 
+  ATTENDANCE_DISTANCE_THRESHOLD_KM: z.coerce.number().positive().default(5),
+  ATTENDANCE_DISTANCE_REPORT_CRON: z.string().default("0 9 * * 1"),
+  ATTENDANCE_DISTANCE_REPORT_TIMEZONE: z
+    .string()
+    .default("Asia/Kolkata"),
+
   LOG_LEVEL: z.string().default("info"),
 });
 

@@ -15,6 +15,52 @@ const getTenantId = (req: Request) => {
   return getTenantIdFromRequest(req as any);
 };
 
+const normalizePurchaseOrderNumberDisplay = (value: any) => {
+  if (value === undefined || value === null) return value;
+  const text = String(value).trim();
+  if (!text) return text;
+
+  const normalized = text.toUpperCase();
+  const crmStyleMatch = normalized.match(/^PO-(\d+)$/);
+  if (crmStyleMatch) {
+    return `PO-${crmStyleMatch[1].padStart(7, "0")}`;
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    return `PO-${normalized.padStart(7, "0")}`;
+  }
+
+  return text;
+};
+
+const assertUniquePurchaseOrderNumber = async (
+  client: any,
+  input: {
+    tenantId: string;
+    voucherNumber: string;
+    excludeId?: string | null;
+  },
+) => {
+  const values: any[] = [input.tenantId, input.voucherNumber];
+  let sql = `
+    SELECT id
+    FROM purchase_orders
+    WHERE tenant_id = $1
+      AND deleted_at IS NULL
+      AND voucher_number = $2
+  `;
+
+  if (input.excludeId) {
+    values.push(input.excludeId);
+    sql += ` AND id <> $3::uuid`;
+  }
+
+  sql += ` LIMIT 1`;
+
+  const result = await client.query(sql, values);
+  return result.rowCount > 0;
+};
+
 const assertPurchaseOrderAccess = async (
   client: any,
   input: {
@@ -198,11 +244,16 @@ export const getPurchaseOrdersHandler = async (req: Request, res: Response) => {
     `;
 
     const listResult = await pool.query(listSql, values);
+    const data = listResult.rows.map((row) => ({
+      ...row,
+      po_number: normalizePurchaseOrderNumberDisplay(row.po_number),
+      voucher_number: normalizePurchaseOrderNumberDisplay(row.voucher_number),
+    }));
 
     return res.status(200).json({
       statusCode: 200,
       message: "Purchase orders fetched successfully",
-      data: listResult.rows,
+      data,
       total,
       offset: query.offset,
       limit: query.limit,
@@ -308,10 +359,18 @@ export const getPurchaseOrderByIdHandler = async (
       });
     }
 
+    const data = {
+      ...result.rows[0],
+      po_number: normalizePurchaseOrderNumberDisplay(result.rows[0].po_number),
+      voucher_number: normalizePurchaseOrderNumberDisplay(
+        result.rows[0].voucher_number,
+      ),
+    };
+
     return res.status(200).json({
       statusCode: 200,
       message: "Purchase order fetched successfully",
-      data: result.rows[0],
+      data,
     });
   } catch (error: any) {
     console.error("getPurchaseOrderByIdHandler error:", error);
@@ -325,28 +384,22 @@ export const getPurchaseOrderByIdHandler = async (
 };
 
 const generatePONumber = async (client: any, tenantId: string) => {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+    `purchase_order_number:${tenantId}`,
+  ]);
+
   const result = await client.query(
     `
-    SELECT voucher_number
+    SELECT COALESCE(MAX(CAST(SUBSTRING(voucher_number FROM 'PO-(\\d+)$') AS INTEGER)), 0) AS last_number
     FROM purchase_orders
     WHERE tenant_id = $1
       AND voucher_number LIKE 'PO-%'
-    ORDER BY created_at DESC
-    LIMIT 1
     `,
     [tenantId],
   );
 
-  let nextNumber = 1;
-
-  if (result.rows.length) {
-    const last = result.rows[0].voucher_number; // PO-0000123
-    const num = parseInt(last.replace("PO-", ""), 10);
-
-    if (!isNaN(num)) {
-      nextNumber = num + 1;
-    }
-  }
+  const lastNumber = Number(result.rows?.[0]?.last_number || 0);
+  const nextNumber = lastNumber + 1;
 
   return `PO-${String(nextNumber).padStart(7, "0")}`;
 };
@@ -391,6 +444,14 @@ export const createPurchaseOrderHandler = async (
     }
 
     const poNumber = await generatePONumber(client, tenantId);
+    const hasDuplicate = await assertUniquePurchaseOrderNumber(client, {
+      tenantId,
+      voucherNumber: poNumber,
+    });
+
+    if (hasDuplicate) {
+      throw new Error(`Purchase order number already exists: ${poNumber}`);
+    }
 
     const poResult = await client.query(
       `
@@ -426,6 +487,15 @@ export const createPurchaseOrderHandler = async (
     );
 
     const purchaseOrder = poResult.rows[0];
+    const responsePurchaseOrder = {
+      ...purchaseOrder,
+      voucher_number: normalizePurchaseOrderNumberDisplay(
+        purchaseOrder.voucher_number,
+      ),
+      po_number: normalizePurchaseOrderNumberDisplay(
+        purchaseOrder.voucher_number,
+      ),
+    };
 
     for (const item of body.items) {
       const quantity = Number(item.quantity || 0);
@@ -490,7 +560,7 @@ export const createPurchaseOrderHandler = async (
 
     return res.status(201).json({
       message: "Purchase order created successfully",
-      data: purchaseOrder,
+      data: responsePurchaseOrder,
       statusCode: 201,
       success: true,
     });
@@ -539,6 +609,25 @@ export const updatePurchaseOrderHandler = async (
       });
     }
 
+    const normalizedPoNumber = normalizePurchaseOrderNumberDisplay(body.po_number);
+
+    if (normalizedPoNumber) {
+      const hasDuplicate = await assertUniquePurchaseOrderNumber(client, {
+        tenantId: String(tenantId),
+        voucherNumber: normalizedPoNumber,
+        excludeId: id,
+      });
+
+      if (hasDuplicate) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          statusCode: 409,
+          message: `Purchase order number already exists: ${normalizedPoNumber}`,
+          data: null,
+        });
+      }
+    }
+
     await client.query(
       `
       UPDATE purchase_orders
@@ -552,7 +641,14 @@ export const updatePurchaseOrderHandler = async (
         AND tenant_id = $6
         AND deleted_at IS NULL
       `,
-      [body.po_number, body.po_date, body.grand_total, body, id, tenantId],
+      [
+        normalizedPoNumber,
+        body.po_date,
+        body.grand_total,
+        { ...body, po_number: normalizedPoNumber },
+        id,
+        tenantId,
+      ],
     );
 
     // 🔥 Items delete + reinsert (simple & safe)
@@ -594,7 +690,14 @@ export const updatePurchaseOrderHandler = async (
 
     await client.query("COMMIT");
 
-    return res.json({ message: "Updated successfully" });
+    return res.json({
+      message: "Updated successfully",
+      data: {
+        id,
+        po_number: normalizedPoNumber,
+        voucher_number: normalizedPoNumber,
+      },
+    });
   } catch (err: any) {
     await client.query("ROLLBACK");
     return res.status(500).json({ message: err.message });

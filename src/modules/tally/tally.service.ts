@@ -195,6 +195,41 @@ function normalizeRef(value: any) {
     .trim();
 }
 
+function formatSalesOrderVoucherNumber(value: any) {
+  const text = cleanText(value);
+  if (!text) return null;
+
+  const normalized = text.toUpperCase();
+  const crmStyleMatch = normalized.match(/^SO-(\d+)$/);
+  if (crmStyleMatch) {
+    return `SO-${crmStyleMatch[1].padStart(7, "0")}`;
+  }
+
+  const numericOnlyMatch = normalized.match(/^\d+$/);
+  if (numericOnlyMatch) {
+    return `SO-${numericOnlyMatch[0].padStart(7, "0")}`;
+  }
+
+  return text;
+}
+
+function formatPurchaseOrderVoucherNumber(value: any) {
+  const text = cleanText(value);
+  if (!text) return null;
+
+  const normalized = text.toUpperCase();
+  const crmStyleMatch = normalized.match(/^PO-(\d+)$/);
+  if (crmStyleMatch) {
+    return `PO-${crmStyleMatch[1].padStart(7, "0")}`;
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    return `PO-${normalized.padStart(7, "0")}`;
+  }
+
+  return text;
+}
+
 function pickFirstText(...values: any[]) {
   for (const value of values) {
     const text = cleanText(value);
@@ -2260,6 +2295,9 @@ async function pullTallyVouchers(input: {
         const voucherNo = cleanText(
           row.voucherNumber || row.number || row.referenceNumber || row.guid,
         );
+        const normalizedVoucherNo = isPO
+          ? formatPurchaseOrderVoucherNumber(voucherNo)
+          : formatSalesOrderVoucherNumber(voucherNo);
 
         if (!voucherNo) {
           throw new Error("Voucher number is required");
@@ -2382,7 +2420,7 @@ async function pullTallyVouchers(input: {
           [
             input.tenantId,
             tallyVoucherGuid || tallyGuid,
-            voucherNo,
+            normalizedVoucherNo,
             referenceNumber,
             voucherNo,
           ],
@@ -2397,23 +2435,24 @@ async function pullTallyVouchers(input: {
   UPDATE purchase_orders
   SET
     tally_guid = COALESCE($3, tally_guid),
-    voucher_number = $4,
-    voucher_date = COALESCE($5, voucher_date),
-    po_date = COALESCE($5, po_date),
-    supplier_name = $6,
-    reference_number = $7,
-    total_amount = $8,
-    status = $9,
-    raw_tally_data = $10,
-    cost_center_guid = $11,
-    cost_center_name = $12,
-    cost_center_id = $13,
-    cost_category = $14,
-    cost_center_amount = $15,
-    cost_center_allocations = $16,
-    tally_company_id = $17,
-    tally_company_guid = $18,
-    tally_company_name = $19,
+    voucher_number = COALESCE($4, voucher_number),
+    tally_voucher_number = $5,
+    voucher_date = COALESCE($6, voucher_date),
+    po_date = COALESCE($6, po_date),
+    supplier_name = $7,
+    reference_number = $8,
+    total_amount = $9,
+    status = $10,
+    raw_tally_data = $11,
+    cost_center_guid = $12,
+    cost_center_name = $13,
+    cost_center_id = $14,
+    cost_category = $15,
+    cost_center_amount = $16,
+    cost_center_allocations = $17,
+    tally_company_id = $18,
+    tally_company_guid = $19,
+    tally_company_name = $20,
     updated_at = NOW()
   WHERE id = $1
     AND tenant_id = $2
@@ -2422,6 +2461,7 @@ async function pullTallyVouchers(input: {
                 orderId,
                 input.tenantId,
                 tallyGuid,
+                normalizedVoucherNo,
                 voucherNo,
                 voucherDate,
                 partyName,
@@ -2447,29 +2487,30 @@ async function pullTallyVouchers(input: {
   SET
     tally_guid = COALESCE($3, tally_guid),
     voucher_guid = COALESCE($3, voucher_guid),
-    tally_voucher_number = $4,
-    voucher_date = COALESCE($5, voucher_date),
-    so_date = COALESCE($5, so_date),
-    customer_name = $6,
-    reference_number = $7,
+    voucher_number = COALESCE($4, voucher_number),
+    tally_voucher_number = $5,
+    voucher_date = COALESCE($6, voucher_date),
+    so_date = COALESCE($6, so_date),
+    customer_name = $7,
+    reference_number = $8,
     source = COALESCE(source, 'crm'),
     sync_status = 'synced',
     tally_entry_status = 'created',
     last_synced_from_tally_at = NOW(),
-    total_amount = $8,
-    status = $9,
-    raw_tally_data = $10,
-    customer_id = $11,
-    organization_id = $11,
-    cost_center_guid = $12,
-    cost_center_name = $13,
-    cost_center_id = $14,
-    cost_category = $15,
-    cost_center_amount = $16,
-    cost_center_allocations = $17,
-    tally_company_id = $18,
-    tally_company_guid = $19,
-    tally_company_name = $20,
+    total_amount = $9,
+    status = $10,
+    raw_tally_data = $11,
+    customer_id = $12,
+    organization_id = $12,
+    cost_center_guid = $13,
+    cost_center_name = $14,
+    cost_center_id = $15,
+    cost_category = $16,
+    cost_center_amount = $17,
+    cost_center_allocations = $18,
+    tally_company_id = $19,
+    tally_company_guid = $20,
+    tally_company_name = $21,
     updated_at = NOW()
   WHERE id = $1
     AND tenant_id = $2
@@ -2478,6 +2519,7 @@ async function pullTallyVouchers(input: {
                 orderId,
                 input.tenantId,
                 tallyVoucherGuid || tallyGuid,
+                normalizedVoucherNo,
                 voucherNo,
                 voucherDate,
                 partyName,
@@ -2510,6 +2552,7 @@ async function pullTallyVouchers(input: {
     tally_company_name,
     tally_guid,
     voucher_number,
+    tally_voucher_number,
     voucher_date,
     po_date,
     supplier_name,
@@ -2528,7 +2571,7 @@ async function pullTallyVouchers(input: {
   )
   VALUES
   (
-    $1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),NOW()
+    $1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW()
   )
   RETURNING id
   `,
@@ -2538,6 +2581,7 @@ async function pullTallyVouchers(input: {
                 tallyCompany.tally_guid,
                 tallyCompany.name,
                 tallyGuid,
+                normalizedVoucherNo,
                 voucherNo,
                 voucherDate,
                 partyName,
@@ -2592,9 +2636,9 @@ async function pullTallyVouchers(input: {
   )
   VALUES
   (
-    $1,$2,$3,$4,$5,$5,$6,$6,$7,$7,$8,$9,
+    $1,$2,$3,$4,$5,$5,$6,$7,$8,$8,$9,$10,
     'tally','synced','created',NOW(),
-    $10,$11,$12,$13,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW()
+    $11,$12,$13,$14,$14,$15,$16,$17,$18,$19,$20,NOW(),NOW()
   )
   RETURNING id
   `,
@@ -2604,6 +2648,7 @@ async function pullTallyVouchers(input: {
                 tallyCompany.tally_guid,
                 tallyCompany.name,
                 tallyVoucherGuid || tallyGuid,
+                normalizedVoucherNo,
                 voucherNo,
                 voucherDate,
                 partyName,

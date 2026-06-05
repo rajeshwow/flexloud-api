@@ -37,6 +37,24 @@ const getRawNumber = (raw: any, keys: string[]) => {
   return 0;
 };
 
+const normalizeSalesOrderNumberDisplay = (value: any) => {
+  if (value === undefined || value === null) return value;
+  const text = String(value).trim();
+  if (!text) return text;
+
+  const normalized = text.toUpperCase();
+  const crmStyleMatch = normalized.match(/^SO-(\d+)$/);
+  if (crmStyleMatch) {
+    return `SO-${crmStyleMatch[1].padStart(7, "0")}`;
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    return `SO-${normalized.padStart(7, "0")}`;
+  }
+
+  return text;
+};
+
 const buildSalesOrderTotals = (order: any, items: any[]) => {
   const raw = order.raw_tally_data || {};
 
@@ -283,11 +301,17 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
       values,
     );
 
+    const rows = result.rows.map((row) => ({
+      ...row,
+      voucher_number: normalizeSalesOrderNumberDisplay(row.voucher_number),
+      so_number: normalizeSalesOrderNumberDisplay(row.so_number),
+    }));
+
     res.json({
       statusCode: 200,
       message: "Sales orders fetched successfully",
-      data: result.rows,
-      total: result.rows[0]?.total_count || 0,
+      data: rows,
+      total: rows[0]?.total_count || 0,
       limit: query.limit,
       offset: query.offset,
       filters: {
@@ -381,6 +405,8 @@ export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
       message: "Sales order fetched successfully",
       data: {
         ...order,
+        voucher_number: normalizeSalesOrderNumberDisplay(order.voucher_number),
+        so_number: normalizeSalesOrderNumberDisplay(order.so_number),
         ...totals,
         expected_delivery_date:
           order.expected_delivery_date ||
@@ -542,7 +568,13 @@ VALUES (
 
     res.status(201).json({
       message: "Sales order created successfully",
-      data: salesOrder,
+      data: {
+        ...salesOrder,
+        voucher_number: normalizeSalesOrderNumberDisplay(
+          salesOrder.voucher_number,
+        ),
+        so_number: normalizeSalesOrderNumberDisplay(salesOrder.so_number),
+      },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
@@ -731,7 +763,15 @@ export const updateSalesOrderHandler = async (req: Request, res: Response) => {
 
     res.json({
       message: "Sales order updated successfully",
-      data: updatedResult.rows[0],
+      data: {
+        ...updatedResult.rows[0],
+        voucher_number: normalizeSalesOrderNumberDisplay(
+          updatedResult.rows[0]?.voucher_number,
+        ),
+        so_number: normalizeSalesOrderNumberDisplay(
+          updatedResult.rows[0]?.so_number,
+        ),
+      },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
