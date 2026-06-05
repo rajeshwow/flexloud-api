@@ -27,8 +27,14 @@ export async function applyLeaveHandler(
     const tenantId = getTenantId(req);
     const userId = req.user?.sub;
 
-    const parsed = ApplyLeaveSchema.parse(req.body);
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized.",
+      });
+    }
 
+    const parsed = ApplyLeaveSchema.parse(req.body);
     const totalDays = calculateLeaveDays(parsed.start_date, parsed.end_date);
 
     const overlappingResult = await pool.query(
@@ -49,6 +55,42 @@ export async function applyLeaveHandler(
       return res.status(400).json({
         success: false,
         message: "You already have a leave request for overlapping dates.",
+      });
+    }
+
+    const assignedTasksResult = await pool.query(
+      `
+      SELECT
+        id,
+        task_number,
+        subject,
+        status,
+        start_date,
+        end_date
+      FROM tasks
+      WHERE tenant_id = $1
+        AND assigned_to = $2
+        AND deleted_at IS NULL
+        AND status <> 'completed'
+        AND start_date::date <= $4::date
+        AND end_date::date >= $3::date
+      ORDER BY start_date ASC
+      `,
+      [tenantId, userId, parsed.start_date, parsed.end_date],
+    );
+
+    if (assignedTasksResult.rowCount) {
+      return res.status(209).json({
+        success: false,
+        statusCode: 209,
+        code: "LEAVE_TASK_CONFLICT",
+        message:
+          "You cannot apply leave because task(s) are assigned to you for selected leave date(s).",
+        data: {
+          task_id: assignedTasksResult.rows[0].id,
+          task_ids: assignedTasksResult.rows.map((task) => task.id),
+          tasks: assignedTasksResult.rows,
+        },
       });
     }
 
