@@ -20,6 +20,7 @@ import costCentersRouter from "./modules/cost-centers/cost-centers.routes";
 import dashboardRouter from "./modules/dashboard/dashboard.routes";
 import deliveryChallansRouter from "./modules/delivery-challans/deliveryChallans.routes";
 import geoVisitsRouter from "./modules/geo-visits/geo-visits.routes";
+import globalSearchRouter from "./modules/global-search/global-search.routes";
 import importsRouter from "./modules/imports/imports.routes";
 import interactionsRouter from "./modules/interactions/interactions.routes";
 import leadsRouter from "./modules/leads/leads.route";
@@ -141,6 +142,7 @@ export function createApp() {
   app.use("/v1/:slug/tally-companies", tallyCompaniesRouter);
   app.use("/v1/:slug/notifications", notificationsRouter);
   app.use("/v1/:slug/reports", reportsRouter);
+  app.use("/v1/:slug/global-search", globalSearchRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
