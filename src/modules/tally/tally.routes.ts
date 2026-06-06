@@ -3,11 +3,13 @@ import { requireAuth } from "../../common/auth";
 import { requirePermissions } from "../../common/requirePermissions";
 import {
   checkTallyConnectionHandler,
+  getTallyAgentSyncStateHandler,
   getTallyConnectionHandler,
   getTallyEmployeesHandler,
   getTallySyncErrorsHandler,
   getTallySyncHistoryHandler,
   getTallySyncStatusHandler,
+  markHistoricalSyncProgressHandler,
   pullCostCentersHandler,
   pullTallyEmployeesHandler,
   pullTallyLedgersHandler,
@@ -17,6 +19,7 @@ import {
   pullTallyStockItemsHandler,
   runTallyManualSyncHandler,
   saveTallyConnectionHandler,
+  updateTallyAgentSyncStateHandler,
   updateTallyRunningCompanyHandler,
 } from "./tally.service";
 
@@ -121,6 +124,24 @@ tallyRouter.post(
   "/agent/company",
   requireTallyAgent,
   updateTallyRunningCompanyHandler,
+);
+
+tallyRouter.get(
+  "/agent/sync-state",
+  requireTallyAgent,
+  getTallyAgentSyncStateHandler,
+);
+
+tallyRouter.post(
+  "/agent/sync-state",
+  requireTallyAgent,
+  updateTallyAgentSyncStateHandler,
+);
+
+tallyRouter.post(
+  "/agent/historical-sync-progress",
+  requireTallyAgent,
+  markHistoricalSyncProgressHandler,
 );
 
 tallyRouter.post(

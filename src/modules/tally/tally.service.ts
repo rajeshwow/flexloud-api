@@ -3683,3 +3683,220 @@ export async function runTallyManualSyncHandler(
     next(error);
   }
 }
+
+export async function getTallyAgentSyncStateHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+
+    const companyName = cleanText(req.query.company_name);
+    const companyGuid = cleanText(req.query.company_guid);
+
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id,
+        tenant_id,
+        company_name,
+        company_guid,
+        tally_url,
+        sync_direction,
+        sync_frequency_minutes,
+        is_active,
+        last_synced_at,
+        last_sync_at,
+        last_success_at,
+        last_error,
+        last_company_checked_at,
+        created_at,
+        updated_at
+      FROM tally_connections
+      WHERE tenant_id = $1
+        AND (
+          $2::text IS NULL
+          OR company_guid = $2
+        )
+        AND (
+          $3::text IS NULL
+          OR lower(trim(company_name)) = lower(trim($3))
+        )
+      ORDER BY updated_at DESC NULLS LAST, created_at DESC
+      LIMIT 1
+      `,
+      [tenantId, companyGuid, companyName],
+    );
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Tally sync state fetched successfully",
+      data: rows[0] || null,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateTallyAgentSyncStateHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+
+    const companyName = cleanText(req.body?.company_name);
+    const companyGuid = cleanText(req.body?.company_guid);
+    const syncMode = cleanText(req.body?.sync_mode) || "incremental";
+    const startedAt = cleanText(req.body?.started_at);
+    const completedAt = cleanText(req.body?.completed_at);
+    const status = cleanText(req.body?.status) || "success";
+    const errorMessage = cleanText(req.body?.error_message);
+
+    const { rows } = await pool.query(
+      `
+      INSERT INTO tally_sync_jobs
+      (
+        tenant_id,
+        sync_type,
+        direction,
+        status,
+        started_at,
+        completed_at,
+        finished_at,
+        error_message,
+        created_at
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        'pull',
+        $3,
+        COALESCE($4::timestamptz, now()),
+        COALESCE($5::timestamptz, now()),
+        COALESCE($5::timestamptz, now()),
+        $6,
+        now()
+      )
+      RETURNING *
+      `,
+      [
+        tenantId,
+        syncMode === "historical" ? "historical_sync" : "incremental_sync",
+        status,
+        startedAt,
+        completedAt,
+        errorMessage,
+      ],
+    );
+
+    await pool.query(
+      `
+      UPDATE tally_connections
+      SET
+        company_name = COALESCE($2, company_name),
+        company_guid = COALESCE($3, company_guid),
+        last_sync_at = COALESCE($4::timestamptz, now()),
+        last_synced_at = CASE
+          WHEN $5 IN ('success', 'partial') THEN COALESCE($4::timestamptz, now())
+          ELSE last_synced_at
+        END,
+        last_success_at = CASE
+          WHEN $5 IN ('success', 'partial') THEN COALESCE($4::timestamptz, now())
+          ELSE last_success_at
+        END,
+        last_error = CASE
+          WHEN $5 = 'failed' THEN $6
+          ELSE NULL
+        END,
+        updated_at = now()
+      WHERE tenant_id = $1
+        AND (
+          ($3::text IS NOT NULL AND company_guid = $3)
+          OR ($2::text IS NOT NULL AND lower(trim(company_name)) = lower(trim($2)))
+          OR ($2::text IS NULL AND $3::text IS NULL)
+        )
+      `,
+      [tenantId, companyName, companyGuid, completedAt, status, errorMessage],
+    );
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Tally sync state updated successfully",
+      data: rows[0],
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function markHistoricalSyncProgressHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const tenantId = getTenantIdFromReq(req);
+
+    const companyName = cleanText(req.body?.company_name);
+    const companyGuid = cleanText(req.body?.company_guid);
+    const fromDate = cleanText(req.body?.from_date);
+    const toDate = cleanText(req.body?.to_date);
+    const status = cleanText(req.body?.status) || "started";
+    const errorMessage = cleanText(req.body?.error_message);
+
+    const { rows } = await pool.query(
+      `
+      INSERT INTO tally_sync_jobs
+      (
+        tenant_id,
+        sync_type,
+        direction,
+        status,
+        started_at,
+        completed_at,
+        finished_at,
+        error_message,
+        created_at
+      )
+      VALUES
+      (
+        $1,
+        'historical_sync',
+        'pull',
+        $2,
+        now(),
+        CASE WHEN $2 IN ('success', 'failed') THEN now() ELSE NULL END,
+        CASE WHEN $2 IN ('success', 'failed') THEN now() ELSE NULL END,
+        $3,
+        now()
+      )
+      RETURNING *
+      `,
+      [
+        tenantId,
+        status === "started" ? "running" : status,
+        [
+          companyName ? `company=${companyName}` : null,
+          companyGuid ? `company_guid=${companyGuid}` : null,
+          fromDate ? `from_date=${fromDate}` : null,
+          toDate ? `to_date=${toDate}` : null,
+          errorMessage,
+        ]
+          .filter(Boolean)
+          .join(" | ") || null,
+      ],
+    );
+
+    return res.status(200).json({
+      statusCode: 200,
+      message: "Historical sync progress marked successfully",
+      data: rows[0],
+    });
+  } catch (error) {
+    next(error);
+  }
+}
