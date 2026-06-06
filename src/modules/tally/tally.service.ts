@@ -2400,21 +2400,17 @@ async function pullTallyVouchers(input: {
         )
       )
       OR voucher_number = $3
-      OR ($4::text IS NOT NULL AND reference_number = $4)
-      OR ($4::text IS NOT NULL AND voucher_number = $4)
-      ${isPO ? "" : "OR ($5::text IS NOT NULL AND tally_voucher_number = $5)"}
+      OR ($5::text IS NOT NULL AND tally_voucher_number = $5)
     )
   ORDER BY
     CASE
       WHEN $2::text IS NOT NULL AND tally_guid = $2 THEN 1
       ${isPO ? "" : "WHEN $2::text IS NOT NULL AND voucher_guid = $2 THEN 2"}
-      WHEN $4::text IS NOT NULL AND voucher_number = $4 THEN 3
-      WHEN $4::text IS NOT NULL AND reference_number = $4 THEN 4
-      ${isPO ? "" : "WHEN $5::text IS NOT NULL AND tally_voucher_number = $5 THEN 5"}
-      WHEN voucher_number = $3 THEN 6
+      WHEN $5::text IS NOT NULL AND tally_voucher_number = $5 THEN 3
+      WHEN voucher_number = $3 THEN 4
       ELSE 99
     END
-  LIMIT 1
+  LIMIT 2
   FOR UPDATE
   `,
           [
@@ -2425,6 +2421,12 @@ async function pullTallyVouchers(input: {
             voucherNo,
           ],
         );
+
+        if (existingOrder.rowCount > 1) {
+          throw new Error(
+            `Multiple ${input.entityType} records matched voucher ${voucherNo}`,
+          );
+        }
 
         if (existingOrder.rowCount) {
           orderId = existingOrder.rows[0].id;

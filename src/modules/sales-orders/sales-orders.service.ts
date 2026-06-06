@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { getUserIdFromRequest } from "../../common/tallyAccess";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
+import { calculateTaskPerformance } from "../tasks/task-performance.service";
 import {
   CreateSalesOrderSchema,
   SalesOrderListQuerySchema,
@@ -53,6 +54,38 @@ const normalizeSalesOrderNumberDisplay = (value: any) => {
   }
 
   return text;
+};
+
+const getUserDisplaySql = (alias: string) => `
+  COALESCE(
+    NULLIF(TRIM(CONCAT(COALESCE(${alias}.first_name, ''), ' ', COALESCE(${alias}.last_name, ''))), ''),
+    NULLIF(${alias}.display_name, ''),
+    NULLIF(${alias}.name, ''),
+    ${alias}.email
+  )
+`;
+
+const joinTextParts = (parts: Array<string | null | undefined>) =>
+  parts
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(", ");
+
+const buildTechnicalTaskSchedule = (expectedDeliveryDate?: string | null) => {
+  const startDate = new Date();
+  let endDate = new Date(startDate.getTime() + 2 * 60 * 60 * 1000);
+
+  if (expectedDeliveryDate) {
+    const candidate = new Date(`${expectedDeliveryDate}T18:00:00`);
+    if (Number.isFinite(candidate.getTime()) && candidate > startDate) {
+      endDate = candidate;
+    }
+  }
+
+  return {
+    startDate: startDate.toISOString(),
+    endDate: endDate.toISOString(),
+  };
 };
 
 const buildSalesOrderTotals = (order: any, items: any[]) => {
@@ -157,6 +190,309 @@ const generateSalesOrderNumber = async (client: any) => {
 
   return result.rows[0].voucher_number;
 };
+
+async function getSalesOrderCustomerLocation(
+  client: any,
+  tenantId: string,
+  organizationId: string,
+) {
+  const result = await client.query(
+    `
+    SELECT
+      o.name,
+      o.email,
+      o.registered_street,
+      o.registered_area,
+      o.registered_postal_code,
+      reg_city.label AS registered_city_name,
+      reg_state.label AS registered_state_name,
+      reg_country.label AS registered_country_name,
+      ob.billing_street,
+      ob.billing_area,
+      ob.billing_postal_code,
+      billing_city.label AS billing_city_name,
+      billing_state.label AS billing_state_name,
+      billing_country.label AS billing_country_name,
+      ob.shipping_street,
+      ob.shipping_area,
+      ob.shipping_postal_code,
+      shipping_city.label AS shipping_city_name,
+      shipping_state.label AS shipping_state_name,
+      shipping_country.label AS shipping_country_name
+    FROM organizations o
+    LEFT JOIN master_values reg_city
+      ON reg_city.id = o.registered_city_id
+     AND reg_city.deleted_at IS NULL
+    LEFT JOIN master_values reg_state
+      ON reg_state.id = o.registered_state_id
+     AND reg_state.deleted_at IS NULL
+    LEFT JOIN master_values reg_country
+      ON reg_country.id = o.registered_country_id
+     AND reg_country.deleted_at IS NULL
+    LEFT JOIN LATERAL (
+      SELECT *
+      FROM organization_branches ob
+      WHERE ob.tenant_id = o.tenant_id
+        AND ob.organization_id = o.id
+      ORDER BY ob.is_head_office DESC, ob.created_at ASC
+      LIMIT 1
+    ) ob ON true
+    LEFT JOIN master_values billing_city
+      ON billing_city.id = ob.billing_city_id
+     AND billing_city.deleted_at IS NULL
+    LEFT JOIN master_values billing_state
+      ON billing_state.id = ob.billing_state_id
+     AND billing_state.deleted_at IS NULL
+    LEFT JOIN master_values billing_country
+      ON billing_country.id = ob.billing_country_id
+     AND billing_country.deleted_at IS NULL
+    LEFT JOIN master_values shipping_city
+      ON shipping_city.id = ob.shipping_city_id
+     AND shipping_city.deleted_at IS NULL
+    LEFT JOIN master_values shipping_state
+      ON shipping_state.id = ob.shipping_state_id
+     AND shipping_state.deleted_at IS NULL
+    LEFT JOIN master_values shipping_country
+      ON shipping_country.id = ob.shipping_country_id
+     AND shipping_country.deleted_at IS NULL
+    WHERE o.tenant_id = $1
+      AND o.id = $2
+    LIMIT 1
+    `,
+    [tenantId, organizationId],
+  );
+
+  const row = result.rows[0] || {};
+
+  const shippingAddress = joinTextParts([
+    row.shipping_street,
+    row.shipping_area,
+    row.shipping_city_name,
+    row.shipping_state_name,
+    row.shipping_country_name,
+    row.shipping_postal_code,
+  ]);
+
+  const billingAddress = joinTextParts([
+    row.billing_street,
+    row.billing_area,
+    row.billing_city_name,
+    row.billing_state_name,
+    row.billing_country_name,
+    row.billing_postal_code,
+  ]);
+
+  const registeredAddress = joinTextParts([
+    row.registered_street,
+    row.registered_area,
+    row.registered_city_name,
+    row.registered_state_name,
+    row.registered_country_name,
+    row.registered_postal_code,
+  ]);
+
+  return {
+    customerName: row.name || null,
+    customerEmail: row.email || null,
+    address: shippingAddress || billingAddress || registeredAddress || null,
+  };
+}
+
+async function upsertTechnicalSetupTask(params: {
+  client: any;
+  tenantId: string;
+  userId: string | null;
+  salesOrder: any;
+  items: any[];
+  technicalAssignedTo: string | null;
+  organizationId: string | null;
+  existingTaskId?: string | null;
+  expectedDeliveryDate?: string | null;
+}) {
+  const {
+    client,
+    tenantId,
+    userId,
+    salesOrder,
+    items,
+    technicalAssignedTo,
+    organizationId,
+    existingTaskId,
+    expectedDeliveryDate,
+  } = params;
+
+  if (!technicalAssignedTo && !existingTaskId) {
+    return null;
+  }
+
+  const location = organizationId
+    ? await getSalesOrderCustomerLocation(client, tenantId, organizationId)
+    : {
+        customerName: salesOrder.customer_name || null,
+        customerEmail: null,
+        address: null,
+      };
+
+  const uniqueProductNames = Array.from(
+    new Set(
+      items
+        .map((item) =>
+          String(
+            item.product_name ||
+              item.item_name ||
+              item.name ||
+              item.sku ||
+              "",
+          ).trim(),
+        )
+        .filter(Boolean),
+    ),
+  );
+
+  const description = [
+    `Sales Order: ${salesOrder.voucher_number}`,
+    `Client: ${location.customerName || salesOrder.customer_name || "-"}`,
+    location.address ? `Address: ${location.address}` : null,
+    location.customerEmail ? `Email: ${location.customerEmail}` : null,
+    uniqueProductNames.length
+      ? `Products:\n${uniqueProductNames.map((name) => `- ${name}`).join("\n")}`
+      : "Products:\n-",
+    "Note: Pricing and quantity are intentionally hidden for this setup task.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const subject = `Setup ${salesOrder.voucher_number} - ${location.customerName || salesOrder.customer_name || "Client"}`.slice(
+    0,
+    255,
+  );
+
+  const schedule = buildTechnicalTaskSchedule(expectedDeliveryDate);
+  const relatedToType = organizationId ? "organization" : "none";
+
+  if (existingTaskId) {
+    const updateResult = await client.query(
+      `
+      UPDATE tasks
+      SET
+        subject = $1,
+        description = $2,
+        start_date = $3,
+        end_date = $4,
+        assigned_to = $5,
+        related_to_type = $6,
+        related_to_id = $7,
+        updated_by = $8,
+        updated_at = NOW()
+      WHERE id = $9
+        AND tenant_id = $10
+        AND deleted_at IS NULL
+      RETURNING id
+      `,
+      [
+        subject,
+        description,
+        schedule.startDate,
+        schedule.endDate,
+        technicalAssignedTo,
+        relatedToType,
+        organizationId,
+        userId,
+        existingTaskId,
+        tenantId,
+      ],
+    );
+
+    if (updateResult.rowCount) {
+      await calculateTaskPerformance(existingTaskId, tenantId);
+      return existingTaskId;
+    }
+  }
+
+  if (!technicalAssignedTo) {
+    return existingTaskId || null;
+  }
+
+  const taskResult = await client.query(
+    `
+    INSERT INTO tasks (
+      id,
+      tenant_id,
+      task_number,
+      subject,
+      description,
+      status,
+      priority_id,
+      start_date,
+      end_date,
+      assigned_to,
+      related_to_type,
+      related_to_id,
+      repeat_task,
+      repeat_task_end,
+      task_duration,
+      task_duration_minutes,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      gen_random_uuid(),
+      $1,
+      'TASK-' || UPPER(SUBSTRING(REPLACE(gen_random_uuid()::text, '-', '') FROM 1 FOR 8)),
+      $2,
+      $3,
+      'not_started',
+      NULL,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
+      'none',
+      NULL,
+      NULL,
+      NULL,
+      $9,
+      $9
+    )
+    RETURNING id
+    `,
+    [
+      tenantId,
+      subject,
+      description,
+      schedule.startDate,
+      schedule.endDate,
+      technicalAssignedTo,
+      relatedToType,
+      organizationId,
+      userId,
+    ],
+  );
+
+  const taskId = taskResult.rows[0]?.id || null;
+
+  if (taskId) {
+    await calculateTaskPerformance(taskId, tenantId);
+    await client.query(
+      `
+      INSERT INTO task_activities (
+        tenant_id, task_id, action, description, performed_by
+      )
+      VALUES ($1, $2, $3, $4, $5)
+      `,
+      [
+        tenantId,
+        taskId,
+        "created",
+        `Technical setup task created from sales order ${salesOrder.voucher_number}`,
+        userId,
+      ],
+    );
+  }
+
+  return taskId;
+}
 
 const assertSalesOrderAccess = async (
   client: any,
@@ -281,8 +617,11 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
         so.quote_id,
         so.total_amount AS grand_total,
         so.raw_tally_data->>'expected_delivery_date' AS expected_delivery_date,
+        so.raw_tally_data->>'technical_assigned_to' AS technical_assigned_to,
+        so.raw_tally_data->>'technical_setup_task_id' AS technical_setup_task_id,
         COALESCE(o.name, so.customer_name) AS customer_name,
         u.name AS assigned_to_name,
+        ${getUserDisplaySql("tech_u")} AS technical_assigned_to_name,
         COUNT(*) OVER()::int AS total_count
       FROM sales_orders so
       LEFT JOIN organizations o
@@ -293,6 +632,8 @@ export const getSalesOrdersHandler = async (req: Request, res: Response) => {
        AND q.tenant_id = so.tenant_id
       LEFT JOIN users u
         ON u.id = so.assigned_to
+      LEFT JOIN users tech_u
+        ON tech_u.id::text = so.raw_tally_data->>'technical_assigned_to'
       WHERE ${whereParts.join(" AND ")}
       ORDER BY so.created_at DESC
       LIMIT $${limitIndex}
@@ -359,14 +700,19 @@ export const getSalesOrderByIdHandler = async (req: Request, res: Response) => {
         so.voucher_date AS so_date,
         so.total_amount AS grand_total,
         so.raw_tally_data->>'expected_delivery_date' AS expected_delivery_date,
+        so.raw_tally_data->>'technical_assigned_to' AS technical_assigned_to,
+        so.raw_tally_data->>'technical_setup_task_id' AS technical_setup_task_id,
         COALESCE(o.name, so.customer_name) AS customer_name,
-        u.name AS assigned_to_name
+        u.name AS assigned_to_name,
+        ${getUserDisplaySql("tech_u")} AS technical_assigned_to_name
       FROM sales_orders so
       LEFT JOIN organizations o
         ON o.id = so.organization_id
        AND o.tenant_id = so.tenant_id
       LEFT JOIN users u
         ON u.id = so.assigned_to
+      LEFT JOIN users tech_u
+        ON tech_u.id::text = so.raw_tally_data->>'technical_assigned_to'
       WHERE ${whereParts.join(" AND ")}
       `,
       values,
@@ -458,6 +804,21 @@ export const createSalesOrderHandler = async (req: Request, res: Response) => {
         0,
       );
 
+    const rawSalesOrderData = {
+      source: "crm",
+      expected_delivery_date: payload.expected_delivery_date || null,
+      technical_assigned_to: payload.technical_assigned_to || null,
+      technical_setup_task_id: null,
+      currency: payload.currency || "INR",
+      subtotal: payload.subtotal || totalAmount,
+      discount: payload.discount || 0,
+      tax: payload.tax || 0,
+      shipping: payload.shipping || 0,
+      notes: payload.notes || null,
+      terms: payload.terms || null,
+      created_by: userId,
+    };
+
     const orderResult = await client.query(
       `
       INSERT INTO sales_orders (
@@ -496,18 +857,7 @@ VALUES (
         payload.reference_number || null,
         totalAmount,
         payload.status || "draft",
-        JSON.stringify({
-          source: "crm",
-          expected_delivery_date: payload.expected_delivery_date || null,
-          currency: payload.currency || "INR",
-          subtotal: payload.subtotal || totalAmount,
-          discount: payload.discount || 0,
-          tax: payload.tax || 0,
-          shipping: payload.shipping || 0,
-          notes: payload.notes || null,
-          terms: payload.terms || null,
-          created_by: userId,
-        }),
+        JSON.stringify(rawSalesOrderData),
         payload.customer_id,
         payload.contact_id || null,
         payload.assigned_to || null,
@@ -562,6 +912,42 @@ VALUES (
           }),
         ],
       );
+    }
+
+    const technicalTaskId = await upsertTechnicalSetupTask({
+      client,
+      tenantId,
+      userId,
+      salesOrder,
+      items: payload.items,
+      technicalAssignedTo: payload.technical_assigned_to || null,
+      organizationId: payload.customer_id,
+      expectedDeliveryDate: payload.expected_delivery_date || null,
+    });
+
+    if (technicalTaskId || payload.technical_assigned_to) {
+      const rawUpdateResult = await client.query(
+        `
+        UPDATE sales_orders
+        SET raw_tally_data = $1::jsonb,
+            updated_at = NOW()
+        WHERE id = $2
+          AND tenant_id = $3
+        RETURNING *
+        `,
+        [
+          JSON.stringify({
+            ...rawSalesOrderData,
+            technical_setup_task_id: technicalTaskId,
+          }),
+          salesOrder.id,
+          tenantId,
+        ],
+      );
+
+      if (rawUpdateResult.rowCount) {
+        Object.assign(salesOrder, rawUpdateResult.rows[0]);
+      }
     }
 
     await client.query("COMMIT");
@@ -654,6 +1040,35 @@ export const updateSalesOrderHandler = async (req: Request, res: Response) => {
       ) ??
       existingResult.rows[0].total_amount;
 
+    const existingRawData = existingResult.rows[0].raw_tally_data || {};
+    const nextRawData = {
+      ...existingRawData,
+      source: "crm",
+      expected_delivery_date:
+        payload.expected_delivery_date !== undefined
+          ? payload.expected_delivery_date || null
+          : existingRawData.expected_delivery_date || null,
+      technical_assigned_to:
+        payload.technical_assigned_to !== undefined
+          ? payload.technical_assigned_to || null
+          : existingRawData.technical_assigned_to || null,
+      technical_setup_task_id: existingRawData.technical_setup_task_id || null,
+      currency: payload.currency || existingRawData.currency || "INR",
+      subtotal: payload.subtotal || totalAmount,
+      discount: payload.discount || 0,
+      tax: payload.tax || 0,
+      shipping: payload.shipping || 0,
+      notes:
+        payload.notes !== undefined
+          ? payload.notes || null
+          : existingRawData.notes || null,
+      terms:
+        payload.terms !== undefined
+          ? payload.terms || null
+          : existingRawData.terms || null,
+      updated_by: userId,
+    };
+
     const updatedResult = await client.query(
       `
       UPDATE sales_orders
@@ -686,19 +1101,7 @@ export const updateSalesOrderHandler = async (req: Request, res: Response) => {
           null,
         totalAmount,
         payload.status || null,
-        JSON.stringify({
-          ...(existingResult.rows[0].raw_tally_data || {}),
-          source: "crm",
-          expected_delivery_date: payload.expected_delivery_date || null,
-          currency: payload.currency || "INR",
-          subtotal: payload.subtotal || totalAmount,
-          discount: payload.discount || 0,
-          tax: payload.tax || 0,
-          shipping: payload.shipping || 0,
-          notes: payload.notes || null,
-          terms: payload.terms || null,
-          updated_by: userId,
-        }),
+        JSON.stringify(nextRawData),
         payload.customer_id || null,
         payload.contact_id ?? null,
         payload.assigned_to ?? null,
@@ -756,6 +1159,64 @@ export const updateSalesOrderHandler = async (req: Request, res: Response) => {
             }),
           ],
         );
+      }
+    }
+
+    const effectiveItems = payload.items
+      ? payload.items
+      : (
+          await client.query(
+            `
+            SELECT item_name AS product_name
+            FROM sales_order_items
+            WHERE sales_order_id = $1
+              AND tenant_id = $2
+            ORDER BY id ASC
+            `,
+            [id, tenantId],
+          )
+        ).rows;
+
+    const technicalTaskId = await upsertTechnicalSetupTask({
+      client,
+      tenantId,
+      userId,
+      salesOrder: updatedResult.rows[0],
+      items: effectiveItems,
+      technicalAssignedTo: nextRawData.technical_assigned_to || null,
+      organizationId:
+        payload.customer_id || existingResult.rows[0].organization_id || null,
+      existingTaskId: nextRawData.technical_setup_task_id || null,
+      expectedDeliveryDate: nextRawData.expected_delivery_date || null,
+    });
+
+    const finalRawData = {
+      ...nextRawData,
+      technical_setup_task_id:
+        technicalTaskId || nextRawData.technical_setup_task_id || null,
+    };
+
+    if (
+      JSON.stringify(finalRawData) !==
+      JSON.stringify(updatedResult.rows[0].raw_tally_data || {})
+    ) {
+      const rawUpdateResult = await client.query(
+        `
+        UPDATE sales_orders
+        SET raw_tally_data = $1::jsonb,
+            updated_at = NOW()
+        WHERE id = $2
+          AND tenant_id = $3
+        RETURNING *
+        `,
+        [JSON.stringify(finalRawData), id, tenantId],
+      );
+
+      if (rawUpdateResult.rowCount) {
+        updatedResult.rows[0] = {
+          ...updatedResult.rows[0],
+          ...rawUpdateResult.rows[0],
+        };
       }
     }
 

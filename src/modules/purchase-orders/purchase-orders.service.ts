@@ -383,25 +383,12 @@ export const getPurchaseOrderByIdHandler = async (
   }
 };
 
-const generatePONumber = async (client: any, tenantId: string) => {
-  await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
-    `purchase_order_number:${tenantId}`,
-  ]);
+const generatePONumber = async (client: any) => {
+  const result = await client.query(`
+    SELECT 'PO-' || LPAD(nextval('purchase_order_number_seq')::TEXT, 7, '0') AS voucher_number
+  `);
 
-  const result = await client.query(
-    `
-    SELECT COALESCE(MAX(CAST(SUBSTRING(voucher_number FROM 'PO-(\\d+)$') AS INTEGER)), 0) AS last_number
-    FROM purchase_orders
-    WHERE tenant_id = $1
-      AND voucher_number LIKE 'PO-%'
-    `,
-    [tenantId],
-  );
-
-  const lastNumber = Number(result.rows?.[0]?.last_number || 0);
-  const nextNumber = lastNumber + 1;
-
-  return `PO-${String(nextNumber).padStart(7, "0")}`;
+  return result.rows[0].voucher_number;
 };
 
 // 🔹 CREATE
@@ -443,7 +430,7 @@ export const createPurchaseOrderHandler = async (
       supplierName = "Unknown Supplier";
     }
 
-    const poNumber = await generatePONumber(client, tenantId);
+    const poNumber = await generatePONumber(client);
     const hasDuplicate = await assertUniquePurchaseOrderNumber(client, {
       tenantId,
       voucherNumber: poNumber,

@@ -26,6 +26,7 @@ export const CreateSalesOrderSchema = z.object({
   customer_id: z.string().uuid("Customer is required"),
   contact_id: z.string().uuid().optional().nullable(),
   assigned_to: z.string().uuid().optional().nullable(),
+  technical_assigned_to: z.string().uuid().optional().nullable(),
 
   currency: z.string().default("INR"),
   status: z.string().default("draft"),
