@@ -1,5 +1,6 @@
 import axios from "axios";
 import type { NextFunction, Request, Response } from "express";
+import { env } from "../../config/env";
 import { pool } from "../../db/pool";
 import {
   mapTallyLedgerToOrganization,
@@ -3593,8 +3594,8 @@ export async function checkTallyConnectionHandler(
   try {
     getTenantIdFromReq(req);
 
-    const agentUrl = process.env.TALLY_AGENT_URL;
-    const controlToken = process.env.TALLY_AGENT_TOKEN;
+    const agentUrl = env.TALLY_AGENT_URL;
+    const controlToken = env.TALLY_AGENT_TOKEN;
 
     if (!agentUrl || !controlToken) {
       return sendTallyResponse(
@@ -3641,8 +3642,8 @@ export async function runTallyManualSyncHandler(
   try {
     getTenantIdFromReq(req);
 
-    const agentUrl = process.env.TALLY_AGENT_URL;
-    const controlToken = process.env.TALLY_AGENT_TOKEN;
+    const agentUrl = env.TALLY_AGENT_URL;
+    const controlToken = env.TALLY_AGENT_TOKEN;
 
     if (!agentUrl || !controlToken) {
       return sendTallyResponse(
@@ -3896,6 +3897,116 @@ export async function markHistoricalSyncProgressHandler(
       message: "Historical sync progress marked successfully",
       data: rows[0],
     });
+  } catch (error) {
+    next(error);
+  }
+}
+export async function runTallyHistoricalSyncHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    getTenantIdFromReq(req);
+
+    const agentUrl = env.TALLY_AGENT_URL;
+    const controlToken = env.TALLY_AGENT_TOKEN;
+
+    if (!agentUrl || !controlToken) {
+      return sendTallyResponse(
+        res,
+        500,
+        "TALLY_AGENT_URL or TALLY_AGENT_TOKEN is missing in backend",
+        null,
+      );
+    }
+
+    const startYear =
+      req.body?.startYear !== undefined ? Number(req.body.startYear) : 2022;
+    const companyName = cleanText(req.body?.companyName) || undefined;
+
+    try {
+      const response = await axios.post(
+        `${agentUrl}/sync/historical`,
+        {
+          startYear,
+          companyName,
+        },
+        {
+          timeout: 15000,
+          headers: {
+            Authorization: `Bearer ${controlToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      return sendTallyResponse(
+        res,
+        response.status || 202,
+        response.data?.message || "Historical sync started",
+        response.data?.data ?? response.data,
+      );
+    } catch (error: any) {
+      return sendTallyResponse(
+        res,
+        error?.response?.status || 500,
+        error?.response?.data?.message || "Unable to start historical sync",
+        error?.response?.data || {
+          message: error?.message,
+        },
+      );
+    }
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getTallyHistoricalSyncStatusHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    getTenantIdFromReq(req);
+
+    const agentUrl = env.TALLY_AGENT_URL;
+    const controlToken = env.TALLY_AGENT_TOKEN;
+
+    if (!agentUrl || !controlToken) {
+      return sendTallyResponse(
+        res,
+        500,
+        "TALLY_AGENT_URL or TALLY_AGENT_TOKEN is missing in backend",
+        null,
+      );
+    }
+
+    try {
+      const response = await axios.get(`${agentUrl}/sync/historical/status`, {
+        timeout: 10000,
+        headers: {
+          Authorization: `Bearer ${controlToken}`,
+        },
+      });
+
+      return sendTallyResponse(
+        res,
+        200,
+        response.data?.message || "Historical sync status fetched",
+        response.data?.data ?? response.data,
+      );
+    } catch (error: any) {
+      return sendTallyResponse(
+        res,
+        error?.response?.status || 500,
+        error?.response?.data?.message ||
+          "Unable to fetch historical sync status",
+        error?.response?.data || {
+          message: error?.message,
+        },
+      );
+    }
   } catch (error) {
     next(error);
   }

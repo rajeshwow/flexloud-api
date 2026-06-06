@@ -1,11 +1,13 @@
 import { NextFunction, Request, Response, Router } from "express";
 import { requireAuth } from "../../common/auth";
 import { requirePermissions } from "../../common/requirePermissions";
+import { env } from "../../config/env";
 import {
   checkTallyConnectionHandler,
   getTallyAgentSyncStateHandler,
   getTallyConnectionHandler,
   getTallyEmployeesHandler,
+  getTallyHistoricalSyncStatusHandler,
   getTallySyncErrorsHandler,
   getTallySyncHistoryHandler,
   getTallySyncStatusHandler,
@@ -17,6 +19,7 @@ import {
   pullTallyPurchaseOrdersHandler,
   pullTallySalesOrdersHandler,
   pullTallyStockItemsHandler,
+  runTallyHistoricalSyncHandler,
   runTallyManualSyncHandler,
   saveTallyConnectionHandler,
   updateTallyAgentSyncStateHandler,
@@ -32,7 +35,7 @@ function requireTallyAgent(req: Request, res: Response, next: NextFunction) {
     ? authHeader.slice("Bearer ".length)
     : "";
 
-  const expectedToken = process.env.TALLY_AGENT_TOKEN || "";
+  const expectedToken = env.TALLY_AGENT_TOKEN || "";
 
   if (!expectedToken) {
     return res.status(500).json({
@@ -178,6 +181,20 @@ tallyRouter.post(
   "/pull/cost-centers",
   requireTallyAgent,
   pullCostCentersHandler,
+);
+
+tallyRouter.post(
+  "/sync/historical",
+  requireAuth,
+  requirePermissions(["tally.sync"]),
+  runTallyHistoricalSyncHandler,
+);
+
+tallyRouter.get(
+  "/sync/historical/status",
+  requireAuth,
+  requirePermissions(["tally.view"]),
+  getTallyHistoricalSyncStatusHandler,
 );
 
 export default tallyRouter;
