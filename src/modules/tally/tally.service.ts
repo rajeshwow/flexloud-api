@@ -2027,9 +2027,139 @@ export async function pullTallyStockItems(input: {
               [input.tenantId, row.guid],
             );
 
-            throw new Error(
-              `Stale stock_item mapping found. Mapping product does not exist anymore. Please sync again. Tally GUID: ${row.guid}`,
-            );
+            const existingByPartNumberAfterStaleMapping = mapped.part_number
+              ? await client.query(
+                  `
+        SELECT id
+        FROM products
+        WHERE tenant_id = $1
+          AND part_number = $2
+        LIMIT 1
+        `,
+                  [input.tenantId, mapped.part_number],
+                )
+              : { rowCount: 0, rows: [] as any[] };
+
+            if (existingByPartNumberAfterStaleMapping.rowCount) {
+              productId = existingByPartNumberAfterStaleMapping.rows[0].id;
+
+              await client.query(
+                `
+      UPDATE products
+      SET name = $3,
+          hsn_code = $4,
+          unit_uqc = $5,
+          category = $6,
+          description = $7,
+          status = $8,
+          cost_price_currency = $9,
+          cost_price = $10,
+          msp_currency = $11,
+          msp = $12,
+          selling_price_currency = $13,
+          selling_price = $14,
+          tax = $15,
+          opening_stock = $16,
+          opening_stock_value = $17,
+          stock_on_hand = $18,
+          available_for_sale = $19,
+          updated_by = $20,
+          updated_at = NOW()
+      WHERE id = $1
+        AND tenant_id = $2
+      `,
+                [
+                  productId,
+                  input.tenantId,
+                  mapped.name,
+                  mapped.hsn_code,
+                  mapped.unit_uqc,
+                  mapped.category,
+                  mapped.description,
+                  mapped.status,
+                  mapped.cost_price_currency,
+                  mapped.cost_price,
+                  mapped.msp_currency,
+                  mapped.msp,
+                  mapped.selling_price_currency,
+                  mapped.selling_price,
+                  mapped.tax,
+                  mapped.opening_stock,
+                  mapped.opening_stock_value,
+                  mapped.stock_on_hand,
+                  mapped.available_for_sale,
+                  input.userId || null,
+                ],
+              );
+            } else {
+              const productResult = await client.query(
+                `
+      INSERT INTO products
+      (
+        tenant_id,
+        name,
+        part_number,
+        hsn_code,
+        unit_uqc,
+        category,
+        description,
+        status,
+        cost_price_currency,
+        cost_price,
+        msp_currency,
+        msp,
+        selling_price_currency,
+        selling_price,
+        tax,
+        opening_stock,
+        opening_stock_value,
+        stock_on_hand,
+        committed_stock,
+        available_for_sale,
+        qty_to_be_invoiced_shipped,
+        qty_to_be_received_billed,
+        source,
+        created_by,
+        updated_by,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+        $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+        $21,$22,'tally',$23,$23,NOW(),NOW()
+      )
+      RETURNING id
+      `,
+                [
+                  input.tenantId,
+                  mapped.name,
+                  mapped.part_number,
+                  mapped.hsn_code,
+                  mapped.unit_uqc,
+                  mapped.category,
+                  mapped.description,
+                  mapped.status,
+                  mapped.cost_price_currency,
+                  mapped.cost_price,
+                  mapped.msp_currency,
+                  mapped.msp,
+                  mapped.selling_price_currency,
+                  mapped.selling_price,
+                  mapped.tax,
+                  mapped.opening_stock,
+                  mapped.opening_stock_value,
+                  mapped.stock_on_hand,
+                  mapped.committed_stock,
+                  mapped.available_for_sale,
+                  mapped.qty_to_be_invoiced_shipped,
+                  mapped.qty_to_be_received_billed,
+                  input.userId || null,
+                ],
+              );
+
+              productId = productResult.rows[0].id;
+            }
           }
         } else {
           const existingByPartNumber = mapped.part_number
@@ -2400,7 +2530,8 @@ async function pullTallyVouchers(input: {
           ${isPO ? "" : "OR voucher_guid = $2"}
         )
       )
-      OR voucher_number = $3
+      OR ($3::text IS NOT NULL AND voucher_number = $3)
+      OR ($4::text IS NOT NULL AND reference_number = $4)
       OR ($5::text IS NOT NULL AND tally_voucher_number = $5)
     )
   ORDER BY
@@ -2408,7 +2539,8 @@ async function pullTallyVouchers(input: {
       WHEN $2::text IS NOT NULL AND tally_guid = $2 THEN 1
       ${isPO ? "" : "WHEN $2::text IS NOT NULL AND voucher_guid = $2 THEN 2"}
       WHEN $5::text IS NOT NULL AND tally_voucher_number = $5 THEN 3
-      WHEN voucher_number = $3 THEN 4
+      WHEN $3::text IS NOT NULL AND voucher_number = $3 THEN 4
+      WHEN $4::text IS NOT NULL AND reference_number = $4 THEN 5
       ELSE 99
     END
   LIMIT 2
