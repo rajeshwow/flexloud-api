@@ -2408,6 +2408,7 @@ async function pullTallyVouchers(input: {
         )
       )
       OR voucher_number = $3
+      OR ($4::text IS NOT NULL AND reference_number = $4)
       OR ($5::text IS NOT NULL AND tally_voucher_number = $5)
     )
   ORDER BY
@@ -2416,6 +2417,7 @@ async function pullTallyVouchers(input: {
       ${isPO ? "" : "WHEN $2::text IS NOT NULL AND voucher_guid = $2 THEN 2"}
       WHEN $5::text IS NOT NULL AND tally_voucher_number = $5 THEN 3
       WHEN voucher_number = $3 THEN 4
+      WHEN $4::text IS NOT NULL AND reference_number = $4 THEN 5
       ELSE 99
     END
   LIMIT 2
