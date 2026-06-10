@@ -1591,5 +1591,5 @@ export function startNotificationSchedulers() {
     },
   );
 
-  console.log("[Notification Scheduler] started");
+  // console.log("[Notification Scheduler] started");
 }

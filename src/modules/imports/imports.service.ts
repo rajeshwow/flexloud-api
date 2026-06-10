@@ -724,7 +724,7 @@ export async function executeImportHandler(
             userId,
           });
 
-          console.log("LEAD INSERT PAYLOAD:", insertPayload);
+          // console.log("LEAD INSERT PAYLOAD:", insertPayload);
 
           await insertRow(client, config, insertPayload);
           await client.query("RELEASE SAVEPOINT import_row_savepoint");

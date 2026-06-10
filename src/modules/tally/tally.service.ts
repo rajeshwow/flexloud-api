@@ -3461,7 +3461,7 @@ export async function pullTallyPurchaseOrdersHandler(
 
     const body = PullPurchaseOrdersSchema.parse(req.body) as any;
 
-    console.log("[PURCHASE ORDER RAW BODY SAMPLE]", body.records.slice(0, 1));
+    // console.log("[PURCHASE ORDER RAW BODY SAMPLE]", body.records.slice(0, 1));
 
     const data = await pullTallyPurchaseOrders({
       tenantId,
@@ -3490,7 +3490,7 @@ export async function pullTallySalesOrdersHandler(
 
     const body = PullSalesOrdersSchema.parse(req.body) as any;
 
-    console.log("[SALES ORDER RAW BODY SAMPLE]", body.records.slice(0, 1));
+    // console.log("[SALES ORDER RAW BODY SAMPLE]", body.records.slice(0, 1));
 
     const data = await pullTallySalesOrders({
       tenantId,
