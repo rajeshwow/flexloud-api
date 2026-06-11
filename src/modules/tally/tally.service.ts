@@ -246,6 +246,29 @@ function formatPurchaseOrderVoucherNumber(value: any) {
   return text;
 }
 
+function buildTallyBackedVoucherNumber(input: {
+  isPO: boolean;
+  rawVoucherNo: string | null;
+  voucherDate: string | null;
+}) {
+  const rawNo = cleanText(input.rawVoucherNo) || "NA";
+
+  const safeNo =
+    rawNo
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 30) || "NA";
+
+  const datePart = input.voucherDate
+    ? input.voucherDate.replace(/-/g, "")
+    : "NODATE";
+
+  const prefix = input.isPO ? "TPO" : "TSV";
+
+  return `${prefix}-${datePart}-${safeNo}`;
+}
+
 function pickFirstText(...values: any[]) {
   for (const value of values) {
     const text = cleanText(value);
@@ -2391,6 +2414,8 @@ async function pullTallyVouchers(input: {
           ? formatPurchaseOrderVoucherNumber(rawVoucherNo)
           : formatSalesOrderVoucherNumber(rawVoucherNo);
 
+        let crmVoucherNumber: string | null = null;
+
         const tallyCompany = await resolveTallyCompany(
           client,
           input.tenantId,
@@ -2425,6 +2450,33 @@ async function pullTallyVouchers(input: {
             row.DATE ||
             row.VOUCHERDATE,
         );
+
+        const voucherTypeName = pickFirstText(
+          row.voucherType,
+          row.voucher_type,
+          (row as any).voucherTypeName,
+          (row as any).voucher_type_name,
+          (row as any).VOUCHERTYPENAME,
+        );
+
+        const normalizedVoucherType = voucherTypeName?.toLowerCase() || null;
+
+        if (
+          !isPO &&
+          normalizedVoucherType &&
+          (!normalizedVoucherType.includes("sales") ||
+            normalizedVoucherType.includes("order"))
+        ) {
+          throw new Error(
+            `Non-sales voucher skipped. Backend accepts only Sales vouchers. Voucher No: ${rawVoucherNo}, Type: ${voucherTypeName}`,
+          );
+        }
+
+        crmVoucherNumber = buildTallyBackedVoucherNumber({
+          isPO,
+          rawVoucherNo,
+          voucherDate,
+        });
 
         const referenceNumber = normalizeRef(
           pickFirstText(
@@ -2469,57 +2521,69 @@ async function pullTallyVouchers(input: {
           cost_center_name: costCenterName,
         });
 
-        const finalTallyGuid = tallyVoucherGuid || tallyGuid || rawVoucherNo;
+        const realTallyGuid = tallyVoucherGuid || tallyGuid;
 
+        const fallbackTallyGuid = [
+          input.entityType,
+          tallyCompany.id,
+          rawVoucherNo,
+          voucherDate || "NO_DATE",
+          partyName || "NO_PARTY",
+        ].join("::");
+
+        const finalTallyGuid = realTallyGuid || fallbackTallyGuid;
         let orderId: string | null = null;
+
+        const dateColumn = isPO ? "po_date" : "so_date";
+        const partyColumn = isPO ? "supplier_name" : "customer_name";
 
         const existingOrder = await client.query(
           `
-          SELECT id
-          FROM ${headerTable}
-          WHERE tenant_id = $1
-            AND deleted_at IS NULL
-            AND tally_company_id = $6::uuid
-            AND (
-              (
-                $2::text IS NOT NULL
-                AND (
-                  tally_guid = $2
-                  ${isPO ? "" : "OR voucher_guid = $2"}
-                )
-              )
-              OR (
-                $3::text IS NOT NULL
-                AND voucher_number = $3
-              )
-              OR (
-                $4::text IS NOT NULL
-                AND reference_number = $4
-              )
-              OR (
-                $5::text IS NOT NULL
-                AND tally_voucher_number = $5
-              )
-            )
-          ORDER BY
-            CASE
-              WHEN $2::text IS NOT NULL AND tally_guid = $2 THEN 1
-              ${isPO ? "" : "WHEN $2::text IS NOT NULL AND voucher_guid = $2 THEN 2"}
-              WHEN $5::text IS NOT NULL AND tally_voucher_number = $5 THEN 3
-              WHEN $3::text IS NOT NULL AND voucher_number = $3 THEN 4
-              WHEN $4::text IS NOT NULL AND reference_number = $4 THEN 5
-              ELSE 99
-            END
-          LIMIT 2
-          FOR UPDATE
-          `,
+  SELECT id
+  FROM ${headerTable}
+  WHERE tenant_id = $1
+    AND deleted_at IS NULL
+    AND tally_company_id = $2::uuid
+    AND (
+      (
+        $3::text IS NOT NULL
+        AND (
+          tally_guid = $3
+          ${isPO ? "" : "OR voucher_guid = $3"}
+        )
+      )
+      OR (
+        $4::text IS NOT NULL
+        AND $5::date IS NOT NULL
+        AND COALESCE(NULLIF(tally_voucher_number, ''), 'NO_TALLY_VOUCHER_NUMBER')
+            = COALESCE(NULLIF($4, ''), 'NO_TALLY_VOUCHER_NUMBER')
+        AND COALESCE(voucher_date, ${dateColumn})::date = $5::date
+        AND lower(trim(COALESCE(${partyColumn}, '')))
+            = lower(trim(COALESCE($6, '')))
+      )
+    )
+  ORDER BY
+    CASE
+      WHEN $3::text IS NOT NULL AND tally_guid = $3 THEN 1
+      ${isPO ? "" : "WHEN $3::text IS NOT NULL AND voucher_guid = $3 THEN 2"}
+      WHEN $4::text IS NOT NULL
+        AND $5::date IS NOT NULL
+        AND COALESCE(NULLIF(tally_voucher_number, ''), 'NO_TALLY_VOUCHER_NUMBER')
+            = COALESCE(NULLIF($4, ''), 'NO_TALLY_VOUCHER_NUMBER')
+        AND COALESCE(voucher_date, ${dateColumn})::date = $5::date
+      THEN 3
+      ELSE 99
+    END
+  LIMIT 1
+  FOR UPDATE
+  `,
           [
             input.tenantId,
-            finalTallyGuid,
-            normalizedVoucherNo,
-            referenceNumber,
-            rawVoucherNo,
             tallyCompany.id,
+            realTallyGuid,
+            rawVoucherNo,
+            voucherDate,
+            partyName,
           ],
         );
 
@@ -2564,7 +2628,7 @@ async function pullTallyVouchers(input: {
                 orderId,
                 input.tenantId,
                 finalTallyGuid,
-                normalizedVoucherNo,
+                crmVoucherNumber,
                 rawVoucherNo,
                 voucherDate,
                 partyName,
@@ -2622,7 +2686,7 @@ async function pullTallyVouchers(input: {
                 orderId,
                 input.tenantId,
                 finalTallyGuid,
-                normalizedVoucherNo,
+                crmVoucherNumber,
                 rawVoucherNo,
                 voucherDate,
                 partyName,
@@ -2684,7 +2748,7 @@ async function pullTallyVouchers(input: {
                 tallyCompany.tally_guid,
                 tallyCompany.name,
                 finalTallyGuid,
-                normalizedVoucherNo,
+                crmVoucherNumber,
                 rawVoucherNo,
                 voucherDate,
                 partyName,
@@ -2751,7 +2815,7 @@ async function pullTallyVouchers(input: {
                 tallyCompany.tally_guid,
                 tallyCompany.name,
                 finalTallyGuid,
-                normalizedVoucherNo,
+                crmVoucherNumber,
                 rawVoucherNo,
                 voucherDate,
                 partyName,
