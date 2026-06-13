@@ -1,3 +1,4 @@
+import { execSync } from "child_process";
 import { Request, Response } from "express";
 import nodemailer from "nodemailer";
 import puppeteer from "puppeteer";
@@ -452,10 +453,32 @@ export async function previewQuotePdfHandler(
   }
 }
 
+// Chrome ka actual path dynamically resolve karo
+function getChromePath(): string {
+  try {
+    return execSync(
+      "which chromium-browser || which chromium || which google-chrome",
+      {
+        encoding: "utf-8",
+      },
+    ).trim();
+  } catch {
+    // Puppeteer ka downloaded chrome use karo
+    return "";
+  }
+}
+
 async function generateQuotePdfBuffer(quote: any) {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath:
+      process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
   });
 
   try {
