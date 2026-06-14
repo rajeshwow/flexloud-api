@@ -87,7 +87,7 @@ export const authService = {
     const { rows } = await pool.query(
       `
       SELECT id, tenant_id, email, username, role, password_hash, name
-      FROM users
+      FROM public.users
       WHERE tenant_id = $1
         AND deleted_at IS NULL
         AND (lower(username) = lower($2) OR lower(email) = lower($2))
