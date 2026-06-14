@@ -28,3 +28,11 @@ export const tenantListQuerySchema = z.object({
   page: z.coerce.number().min(1).optional().default(1),
   limit: z.coerce.number().min(1).max(100).optional().default(10),
 });
+
+export const tenantIdParamSchema = z.object({
+  tenantId: z.string().uuid("Valid tenant id is required"),
+});
+
+export const updateTenantPermissionsSchema = z.object({
+  permissionCodes: z.array(z.string().min(2)).optional().default([]),
+});

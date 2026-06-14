@@ -10,36 +10,147 @@ import {
   UpdateUserRolesSchema,
 } from "./rbac.schema";
 
+const normalizeRoleCode = (value: string) => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "role";
+};
+
+const normalizePermissionCodes = (permissionCodes: string[]) => {
+  return Array.from(
+    new Set(
+      permissionCodes
+        .map((code) => String(code || "").trim())
+        .filter((code) => code.length > 0),
+    ),
+  );
+};
+
+async function assertPermissionsAllowed(
+  db: any,
+  tenantId: string,
+  permissionCodes: string[],
+) {
+  const normalizedCodes = normalizePermissionCodes(permissionCodes);
+
+  if (!normalizedCodes.length) {
+    return [];
+  }
+
+  const allowedRes = await db.query(
+    `
+    SELECT p.code
+    FROM tenant_permission_allowlist tpa
+    JOIN permissions p
+      ON p.code = tpa.permission_code
+    WHERE tpa.tenant_id = $1
+      AND tpa.permission_code = ANY($2::text[])
+      AND tpa.deleted_at IS NULL
+      AND tpa.is_active = true
+      AND p.is_active = true
+    `,
+    [tenantId, normalizedCodes],
+  );
+
+  const allowedSet = new Set(allowedRes.rows.map((row: any) => row.code));
+  const invalidPermissionCodes = normalizedCodes.filter(
+    (code) => !allowedSet.has(code),
+  );
+
+  if (invalidPermissionCodes.length) {
+    const err: any = new Error(
+      "One or more permissions are not allowed for this tenant",
+    );
+    err.statusCode = 400;
+    err.details = {
+      invalidPermissionCodes,
+    };
+    throw err;
+  }
+
+  return normalizedCodes;
+}
+
+async function insertRolePermissions(
+  db: any,
+  roleId: string,
+  permissionCodes: string[],
+) {
+  const normalizedCodes = normalizePermissionCodes(permissionCodes);
+
+  if (!normalizedCodes.length) {
+    return 0;
+  }
+
+  const result = await db.query(
+    `
+    INSERT INTO role_permissions (
+      role_id,
+      permission_code
+    )
+    SELECT
+      $1,
+      selected.permission_code
+    FROM unnest($2::text[]) AS selected(permission_code)
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM role_permissions rp
+      WHERE rp.role_id = $1
+        AND rp.permission_code = selected.permission_code
+    )
+    RETURNING permission_code
+    `,
+    [roleId, normalizedCodes],
+  );
+
+  return result.rowCount || 0;
+}
+
 export const rbacService = {
-  async getPermissionGroups() {
+  async getPermissionGroups(tenantId: string) {
     const { rows } = await pool.query(
       `
       SELECT
-        code,
-        description,
-        module_key,
-        action_key,
-        is_active
-      FROM permissions
-      WHERE is_active = true
-      ORDER BY module_key ASC, action_key ASC, code ASC
+        p.code,
+        p.description,
+        p.module_key,
+        p.action_key,
+        p.is_active
+      FROM tenant_permission_allowlist tpa
+      JOIN permissions p
+        ON p.code = tpa.permission_code
+      WHERE tpa.tenant_id = $1
+        AND tpa.deleted_at IS NULL
+        AND tpa.is_active = true
+        AND p.is_active = true
+      ORDER BY
+        COALESCE(p.module_key, 'other') ASC,
+        COALESCE(p.action_key, '') ASC,
+        p.code ASC
       `,
+      [tenantId],
     );
 
     const map = new Map<string, any>();
 
     for (const row of rows) {
-      if (!map.has(row.module_key)) {
-        map.set(row.module_key, {
-          module_key: row.module_key,
-          module_label: row.module_key,
+      const moduleKey = row.module_key || "other";
+
+      if (!map.has(moduleKey)) {
+        map.set(moduleKey, {
+          module_key: moduleKey,
+          module_label: moduleKey,
           permissions: [],
         });
       }
 
-      map.get(row.module_key).permissions.push({
+      map.get(moduleKey).permissions.push({
         code: row.code,
-        label: row.action_key,
+        label: row.action_key || row.code,
         action_key: row.action_key,
         description: row.description,
       });
@@ -53,13 +164,14 @@ export const rbacService = {
     const search = (query.search as string | undefined)?.trim();
     const isActive = query.is_active as string | undefined;
 
-    const where: string[] = ["r.tenant_id = $1"];
+    const where: string[] = ["r.tenant_id = $1", "r.deleted_at IS NULL"];
     const values: any[] = [tenantId];
     let i = 2;
 
     if (search) {
       where.push(`(
         r.name ILIKE $${i}
+        OR r.code ILIKE $${i}
         OR COALESCE(r.description, '') ILIKE $${i}
       )`);
       values.push(`%${search}%`);
@@ -73,7 +185,11 @@ export const rbacService = {
     }
 
     const countRes = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM roles r WHERE ${where.join(" AND ")}`,
+      `
+      SELECT COUNT(*)::int AS total
+      FROM roles r
+      WHERE ${where.join(" AND ")}
+      `,
       values,
     );
 
@@ -91,19 +207,29 @@ export const rbacService = {
         r.updated_by_id,
         r.created_at,
         r.updated_at,
-        COALESCE(urc.user_count, 0)::int AS user_count,
-        COALESCE(rpc.permission_count, 0)::int AS permission_count
+        COALESCE((
+          SELECT COUNT(*)::int
+          FROM user_roles ur
+          JOIN users u
+            ON u.id = ur.user_id
+          WHERE ur.role_id = r.id
+            AND ur.tenant_id = r.tenant_id
+            AND u.deleted_at IS NULL
+        ), 0) AS user_count,
+        COALESCE((
+          SELECT COUNT(*)::int
+          FROM role_permissions rp
+          JOIN tenant_permission_allowlist tpa
+            ON tpa.permission_code = rp.permission_code
+           AND tpa.tenant_id = r.tenant_id
+           AND tpa.deleted_at IS NULL
+           AND tpa.is_active = true
+          JOIN permissions p
+            ON p.code = rp.permission_code
+           AND p.is_active = true
+          WHERE rp.role_id = r.id
+        ), 0) AS permission_count
       FROM roles r
-      LEFT JOIN (
-        SELECT role_id, COUNT(*) AS user_count
-        FROM user_roles
-        GROUP BY role_id
-      ) urc ON urc.role_id = r.id
-      LEFT JOIN (
-        SELECT role_id, COUNT(*) AS permission_count
-        FROM role_permissions
-        GROUP BY role_id
-      ) rpc ON rpc.role_id = r.id
       WHERE ${where.join(" AND ")}
       ORDER BY r.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
@@ -124,12 +250,37 @@ export const rbacService = {
     };
   },
 
-  async createRole(tenantId: string, userId: string, body: unknown) {
+  async createRole(tenantId: string, userId: string | null, body: unknown) {
     const payload = CreateRoleSchema.parse(body);
     const client = await pool.connect();
 
     try {
       await client.query("BEGIN");
+
+      const roleCode = normalizeRoleCode(payload.code || payload.name);
+      const allowedPermissions = await assertPermissionsAllowed(
+        client,
+        tenantId,
+        payload.permissions,
+      );
+
+      const duplicateCodeRes = await client.query(
+        `
+        SELECT id
+        FROM roles
+        WHERE tenant_id = $1
+          AND lower(code) = lower($2)
+          AND deleted_at IS NULL
+        LIMIT 1
+        `,
+        [tenantId, roleCode],
+      );
+
+      if (duplicateCodeRes.rowCount) {
+        const err: any = new Error("Role code already exists");
+        err.statusCode = 409;
+        throw err;
+      }
 
       const roleRes = await client.query(
         `
@@ -143,12 +294,13 @@ export const rbacService = {
           created_by_id,
           updated_by_id
         )
-        VALUES ($1, $2, $3, false, $4, $5, $5)
+        VALUES ($1, $2, $3, $4, false, $5, $6, $6)
         RETURNING *
         `,
         [
           tenantId,
           payload.name.trim(),
+          roleCode,
           payload.description ?? null,
           payload.is_active ?? true,
           userId,
@@ -157,28 +309,10 @@ export const rbacService = {
 
       const role = roleRes.rows[0];
 
-      if (payload.permissions.length > 0) {
-        const valuesSql: string[] = [];
-        const values: any[] = [];
-
-        payload.permissions.forEach((permissionCode, index) => {
-          const base = index * 2;
-          valuesSql.push(`($${base + 1}, $${base + 2})`);
-          values.push(role.id, permissionCode);
-        });
-
-        await client.query(
-          `
-          INSERT INTO role_permissions (role_id, permission_code)
-          VALUES ${valuesSql.join(", ")}
-          ON CONFLICT (role_id, permission_code) DO NOTHING
-          `,
-          values,
-        );
-      }
+      await insertRolePermissions(client, role.id, allowedPermissions);
 
       await client.query("COMMIT");
-      return role;
+      return await this.getRoleById(tenantId, role.id);
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -192,7 +326,9 @@ export const rbacService = {
       `
       SELECT *
       FROM roles
-      WHERE id = $1 AND tenant_id = $2
+      WHERE id = $1
+        AND tenant_id = $2
+        AND deleted_at IS NULL
       `,
       [roleId, tenantId],
     );
@@ -202,12 +338,20 @@ export const rbacService = {
 
     const permissionRes = await pool.query<{ permission_code: string }>(
       `
-      SELECT permission_code
-      FROM role_permissions
-      WHERE role_id = $1
-      ORDER BY permission_code ASC
+      SELECT rp.permission_code
+      FROM role_permissions rp
+      JOIN tenant_permission_allowlist tpa
+        ON tpa.permission_code = rp.permission_code
+       AND tpa.tenant_id = $2
+       AND tpa.deleted_at IS NULL
+       AND tpa.is_active = true
+      JOIN permissions p
+        ON p.code = rp.permission_code
+       AND p.is_active = true
+      WHERE rp.role_id = $1
+      ORDER BY rp.permission_code ASC
       `,
-      [roleId],
+      [roleId, tenantId],
     );
 
     const userRes = await pool.query(
@@ -220,9 +364,11 @@ export const rbacService = {
         u.is_active,
         u.created_at
       FROM user_roles ur
-      INNER JOIN users u ON u.id = ur.user_id
+      INNER JOIN users u
+        ON u.id = ur.user_id
       WHERE ur.role_id = $1
         AND ur.tenant_id = $2
+        AND u.deleted_at IS NULL
       ORDER BY u.name ASC, u.email ASC
       `,
       [roleId, tenantId],
@@ -238,7 +384,7 @@ export const rbacService = {
   async updateRole(
     tenantId: string,
     roleId: string,
-    userId: string,
+    userId: string | null,
     body: unknown,
   ) {
     const payload = UpdateRoleSchema.parse(body);
@@ -251,12 +397,15 @@ export const rbacService = {
         `
         SELECT *
         FROM roles
-        WHERE id = $1 AND tenant_id = $2
+        WHERE id = $1
+          AND tenant_id = $2
+          AND deleted_at IS NULL
         `,
         [roleId, tenantId],
       );
 
       const existingRole = existingRoleRes.rows[0];
+
       if (!existingRole) {
         const err: any = new Error("Role not found");
         err.statusCode = 404;
@@ -271,9 +420,31 @@ export const rbacService = {
         updates.push(`name = $${i++}`);
         values.push(payload.name.trim());
       }
+
       if (payload.code !== undefined) {
+        const nextCode = normalizeRoleCode(payload.code);
+
+        const duplicateCodeRes = await client.query(
+          `
+          SELECT id
+          FROM roles
+          WHERE tenant_id = $1
+            AND lower(code) = lower($2)
+            AND id <> $3
+            AND deleted_at IS NULL
+          LIMIT 1
+          `,
+          [tenantId, nextCode, roleId],
+        );
+
+        if (duplicateCodeRes.rowCount) {
+          const err: any = new Error("Role code already exists");
+          err.statusCode = 409;
+          throw err;
+        }
+
         updates.push(`code = $${i++}`);
-        values.push(payload.code.trim());
+        values.push(nextCode);
       }
 
       if (payload.description !== undefined) {
@@ -290,6 +461,9 @@ export const rbacService = {
       values.push(userId);
 
       if (updates.length > 0) {
+        const roleIdIndex = i++;
+        const tenantIdIndex = i++;
+
         values.push(roleId);
         values.push(tenantId);
 
@@ -297,36 +471,30 @@ export const rbacService = {
           `
           UPDATE roles
           SET ${updates.join(", ")}, updated_at = now()
-          WHERE id = $${i++} AND tenant_id = $${i}
+          WHERE id = $${roleIdIndex}
+            AND tenant_id = $${tenantIdIndex}
+            AND deleted_at IS NULL
           `,
           values,
         );
       }
 
       if (payload.permissions !== undefined) {
-        await client.query(`DELETE FROM role_permissions WHERE role_id = $1`, [
-          roleId,
-        ]);
+        const allowedPermissions = await assertPermissionsAllowed(
+          client,
+          tenantId,
+          payload.permissions,
+        );
 
-        if (payload.permissions.length > 0) {
-          const valuesSql: string[] = [];
-          const rpValues: any[] = [];
+        await client.query(
+          `
+          DELETE FROM role_permissions
+          WHERE role_id = $1
+          `,
+          [roleId],
+        );
 
-          payload.permissions.forEach((permissionCode, index) => {
-            const base = index * 2;
-            valuesSql.push(`($${base + 1}, $${base + 2})`);
-            rpValues.push(roleId, permissionCode);
-          });
-
-          await client.query(
-            `
-            INSERT INTO role_permissions (role_id, permission_code)
-            VALUES ${valuesSql.join(", ")}
-            ON CONFLICT (role_id, permission_code) DO NOTHING
-            `,
-            rpValues,
-          );
-        }
+        await insertRolePermissions(client, roleId, allowedPermissions);
       }
 
       await client.query("COMMIT");
@@ -342,7 +510,7 @@ export const rbacService = {
   async cloneRole(
     tenantId: string,
     sourceRoleId: string,
-    userId: string,
+    userId: string | null,
     body: unknown,
   ) {
     const payload = CloneRoleSchema.parse(body);
@@ -355,15 +523,38 @@ export const rbacService = {
         `
         SELECT *
         FROM roles
-        WHERE id = $1 AND tenant_id = $2
+        WHERE id = $1
+          AND tenant_id = $2
+          AND deleted_at IS NULL
         `,
         [sourceRoleId, tenantId],
       );
 
       const sourceRole = sourceRoleRes.rows[0];
+
       if (!sourceRole) {
         const err: any = new Error("Source role not found");
         err.statusCode = 404;
+        throw err;
+      }
+
+      const roleCode = normalizeRoleCode(payload.name);
+
+      const duplicateCodeRes = await client.query(
+        `
+        SELECT id
+        FROM roles
+        WHERE tenant_id = $1
+          AND lower(code) = lower($2)
+          AND deleted_at IS NULL
+        LIMIT 1
+        `,
+        [tenantId, roleCode],
+      );
+
+      if (duplicateCodeRes.rowCount) {
+        const err: any = new Error("Role code already exists");
+        err.statusCode = 409;
         throw err;
       }
 
@@ -379,27 +570,51 @@ export const rbacService = {
           created_by_id,
           updated_by_id
         )
-        VALUES ($1, $2, $3, false, true, $4, $4)
+        VALUES ($1, $2, $3, $4, false, true, $5, $5)
         RETURNING *
         `,
-        [tenantId, payload.name.trim(), payload.description ?? null, userId],
+        [
+          tenantId,
+          payload.name.trim(),
+          roleCode,
+          payload.description ?? null,
+          userId,
+        ],
       );
 
       const newRole = newRoleRes.rows[0];
 
       await client.query(
         `
-        INSERT INTO role_permissions (role_id, permission_code)
-        SELECT $1, rp.permission_code
+        INSERT INTO role_permissions (
+          role_id,
+          permission_code
+        )
+        SELECT
+          $1,
+          rp.permission_code
         FROM role_permissions rp
+        JOIN tenant_permission_allowlist tpa
+          ON tpa.permission_code = rp.permission_code
+         AND tpa.tenant_id = $3
+         AND tpa.deleted_at IS NULL
+         AND tpa.is_active = true
+        JOIN permissions p
+          ON p.code = rp.permission_code
+         AND p.is_active = true
         WHERE rp.role_id = $2
-        ON CONFLICT (role_id, permission_code) DO NOTHING
+          AND NOT EXISTS (
+            SELECT 1
+            FROM role_permissions existing_rp
+            WHERE existing_rp.role_id = $1
+              AND existing_rp.permission_code = rp.permission_code
+          )
         `,
-        [newRole.id, sourceRoleId],
+        [newRole.id, sourceRoleId, tenantId],
       );
 
       await client.query("COMMIT");
-      return newRole;
+      return await this.getRoleById(tenantId, newRole.id);
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -407,12 +622,15 @@ export const rbacService = {
       client.release();
     }
   },
+
   async assignUsersToRole(
     tenantId: string,
     roleId: string,
-    actorUserId: string,
+    actorUserId: string | null,
     body: unknown,
   ) {
+    void actorUserId;
+
     const payload = z
       .object({
         user_ids: z.array(z.string().uuid()).default([]),
@@ -426,10 +644,12 @@ export const rbacService = {
 
       const roleRes = await client.query(
         `
-      SELECT id, tenant_id
-      FROM roles
-      WHERE id = $1 AND tenant_id = $2
-      `,
+        SELECT id, tenant_id
+        FROM roles
+        WHERE id = $1
+          AND tenant_id = $2
+          AND deleted_at IS NULL
+        `,
         [roleId, tenantId],
       );
 
@@ -442,11 +662,12 @@ export const rbacService = {
       if (payload.user_ids.length > 0) {
         const userCheckRes = await client.query(
           `
-        SELECT id
-        FROM users
-        WHERE tenant_id = $1
-          AND id = ANY($2::uuid[])
-        `,
+          SELECT id
+          FROM users
+          WHERE tenant_id = $1
+            AND id = ANY($2::uuid[])
+            AND deleted_at IS NULL
+          `,
           [tenantId, payload.user_ids],
         );
 
@@ -459,10 +680,10 @@ export const rbacService = {
 
       await client.query(
         `
-      DELETE FROM user_roles
-      WHERE role_id = $1
-        AND tenant_id = $2
-      `,
+        DELETE FROM user_roles
+        WHERE role_id = $1
+          AND tenant_id = $2
+        `,
         [roleId, tenantId],
       );
 
@@ -478,13 +699,13 @@ export const rbacService = {
 
         await client.query(
           `
-    INSERT INTO user_roles (
-      user_id,
-      role_id,
-      tenant_id
-    )
-    VALUES ${valuesSql.join(", ")}
-    `,
+          INSERT INTO user_roles (
+            user_id,
+            role_id,
+            tenant_id
+          )
+          VALUES ${valuesSql.join(", ")}
+          `,
           values,
         );
       }
@@ -511,7 +732,9 @@ export const rbacService = {
         `
         SELECT id, tenant_id
         FROM users
-        WHERE id = $1 AND tenant_id = $2
+        WHERE id = $1
+          AND tenant_id = $2
+          AND deleted_at IS NULL
         `,
         [userId, tenantId],
       );
@@ -529,6 +752,7 @@ export const rbacService = {
           FROM roles
           WHERE tenant_id = $1
             AND id = ANY($2::uuid[])
+            AND deleted_at IS NULL
           `,
           [tenantId, payload.role_ids],
         );
@@ -561,7 +785,11 @@ export const rbacService = {
 
         await client.query(
           `
-          INSERT INTO user_roles (user_id, role_id, tenant_id)
+          INSERT INTO user_roles (
+            user_id,
+            role_id,
+            tenant_id
+          )
           VALUES ${valuesSql.join(", ")}
           `,
           values,
@@ -587,7 +815,7 @@ export async function assignUsersToRoleHandler(
 ) {
   try {
     const tenantId = getTenantId(req);
-    const userId = req.user?.sub;
+    const userId = req.user?.id || req.user?.sub || null;
 
     const data = await rbacService.assignUsersToRole(
       tenantId,
@@ -606,7 +834,10 @@ export async function assignUsersToRoleHandler(
     }
 
     if (error?.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+      return res.status(error.statusCode).json({
+        message: error.message,
+        details: error.details || null,
+      });
     }
 
     next(error);
@@ -619,7 +850,8 @@ export async function getPermissionGroupsHandler(
   next: NextFunction,
 ) {
   try {
-    const data = await rbacService.getPermissionGroups();
+    const tenantId = getTenantId(req);
+    const data = await rbacService.getPermissionGroups(tenantId);
     return res.json({ data });
   } catch (error) {
     next(error);
@@ -647,17 +879,25 @@ export async function createRoleHandler(
 ) {
   try {
     const tenantId = getTenantId(req);
-    const userId = req.user?.sub;
+    const userId = req.user?.id || req.user?.sub || null;
 
     const data = await rbacService.createRole(tenantId, userId, req.body);
     return res.status(201).json({ data });
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({
         message: "Validation failed",
         errors: error.flatten(),
       });
     }
+
+    if (error?.statusCode) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        details: error.details || null,
+      });
+    }
+
     next(error);
   }
 }
@@ -688,7 +928,7 @@ export async function updateRoleHandler(
 ) {
   try {
     const tenantId = getTenantId(req);
-    const userId = req.user?.sub;
+    const userId = req.user?.id || req.user?.sub || null;
 
     const data = await rbacService.updateRole(
       tenantId,
@@ -707,7 +947,10 @@ export async function updateRoleHandler(
     }
 
     if (error?.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+      return res.status(error.statusCode).json({
+        message: error.message,
+        details: error.details || null,
+      });
     }
 
     next(error);
@@ -721,7 +964,7 @@ export async function cloneRoleHandler(
 ) {
   try {
     const tenantId = getTenantId(req);
-    const userId = req.user?.sub;
+    const userId = req.user?.id || req.user?.sub || null;
 
     const data = await rbacService.cloneRole(
       tenantId,
@@ -740,7 +983,10 @@ export async function cloneRoleHandler(
     }
 
     if (error?.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+      return res.status(error.statusCode).json({
+        message: error.message,
+        details: error.details || null,
+      });
     }
 
     next(error);
@@ -770,7 +1016,10 @@ export async function updateUserRolesHandler(
     }
 
     if (error?.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+      return res.status(error.statusCode).json({
+        message: error.message,
+        details: error.details || null,
+      });
     }
 
     next(error);
