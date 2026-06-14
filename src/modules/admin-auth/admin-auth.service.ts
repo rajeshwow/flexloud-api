@@ -37,7 +37,7 @@ export async function adminLogin(req: Request, res: Response) {
         password_hash,
         is_super_admin,
         is_active
-      FROM users
+      FROM public.users
       WHERE lower(email) = lower($1)
         AND deleted_at IS NULL
       LIMIT 1
@@ -74,6 +74,10 @@ export async function adminLogin(req: Request, res: Response) {
       return response(res, 401, "Invalid email or password", null);
     }
 
+    if (!process.env.JWT_SECRET) {
+      return response(res, 500, "JWT secret is not configured", null);
+    }
+
     const accessToken = jwt.sign(
       {
         id: user.id,
@@ -81,7 +85,7 @@ export async function adminLogin(req: Request, res: Response) {
         email: user.email,
         is_super_admin: user.is_super_admin,
       },
-      process.env.JWT_SECRET as string,
+      process.env.JWT_SECRET,
       {
         expiresIn: (process.env.JWT_EXPIRES_IN ||
           "7d") as jwt.SignOptions["expiresIn"],
