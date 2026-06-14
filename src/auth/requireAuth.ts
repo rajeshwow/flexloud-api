@@ -20,18 +20,39 @@ function isRole(x: any): x is Role {
   return Roles.includes(x);
 }
 
-export function requireAuth(req: Request, _res: Response, next: NextFunction) {
+function sendAuthError(
+  res: Response,
+  message: string,
+  code: string,
+  statusCode = 401,
+) {
+  return res.status(statusCode).json({
+    statusCode,
+    message,
+    data: {
+      code,
+    },
+  });
+}
+
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const h = req.header("Authorization");
-    if (!h?.startsWith("Bearer "))
-      throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+
+    if (!h?.startsWith("Bearer ")) {
+      return sendAuthError(res, "Unauthorized", "AUTH_REQUIRED", 401);
+    }
 
     const token = h.slice("Bearer ".length).trim();
+
+    if (!token) {
+      return sendAuthError(res, "Unauthorized", "AUTH_REQUIRED", 401);
+    }
+
     const payload = jwt.verify(token, JWT_SECRET) as any;
 
-    // ✅ must have role
     if (!isRole(payload.role)) {
-      throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+      return sendAuthError(res, "Invalid token", "INVALID_TOKEN", 401);
     }
 
     req.user = {
@@ -39,11 +60,26 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction) {
       email: payload.email ? String(payload.email) : undefined,
       name: payload.name ? String(payload.name) : undefined,
       tenantId: payload.tenantId ? String(payload.tenantId) : undefined,
-      role: payload.role, // ✅ typed Role now
+      role: payload.role,
     } as any;
 
     next();
-  } catch (e) {
-    next(Object.assign(new Error("Unauthorized"), { statusCode: 401 }));
+  } catch (e: any) {
+    const errorName = e?.name || "";
+
+    if (errorName === "TokenExpiredError") {
+      return sendAuthError(
+        res,
+        "Token expired. Please login again.",
+        "TOKEN_EXPIRED",
+        401,
+      );
+    }
+
+    if (errorName === "JsonWebTokenError") {
+      return sendAuthError(res, "Invalid token", "INVALID_TOKEN", 401);
+    }
+
+    return sendAuthError(res, "Unauthorized", "UNAUTHORIZED", 401);
   }
 }
