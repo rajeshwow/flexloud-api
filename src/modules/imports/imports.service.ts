@@ -81,7 +81,7 @@ async function findUserIdByEmail(
   const result = await client.query(
     `
       SELECT id
-      FROM users
+      FROM public.users
       WHERE tenant_id = $1
         AND LOWER(email) = LOWER($2)
       LIMIT 1

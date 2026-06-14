@@ -1275,7 +1275,7 @@ async function getTenantAdminRecipients(tenantId: string) {
   const result = await pool.query<{ user_id: string; email: string }>(
     `
     SELECT DISTINCT u.id AS user_id, u.email
-    FROM users u
+    FROM public.users u
     LEFT JOIN user_roles ur
       ON ur.tenant_id = u.tenant_id
      AND ur.user_id = u.id

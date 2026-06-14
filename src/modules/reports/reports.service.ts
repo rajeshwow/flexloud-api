@@ -386,7 +386,7 @@ export async function getUserCategoryTargetsHandler(
             STRING_AGG(DISTINCT NULLIF(cc.name, ''), ', '),
             'No Cost Center Mapped'
           ) AS mapped_cost_centers
-        FROM users u
+        FROM public.users u
         LEFT JOIN user_cost_centers ucc
           ON ucc.tenant_id = u.tenant_id
          AND ucc.user_id = u.id

@@ -263,7 +263,7 @@ export async function getEmployeeTallyPerformanceHandler(
           ELSE 'Critical'
         END AS performance_status
 
-      FROM users u
+      FROM public.users u
 
       LEFT JOIN organizations o
         ON o.tenant_id = u.tenant_id
@@ -459,7 +459,7 @@ export async function getTallyAgeingReportHandler(req: Request, res: Response) {
 
         COALESCE(SUM(t.pending_amount), 0) AS total_pending
 
-      FROM users u
+      FROM public.users u
 
       JOIN organizations o
         ON o.tenant_id = u.tenant_id

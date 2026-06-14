@@ -663,7 +663,7 @@ export const rbacService = {
         const userCheckRes = await client.query(
           `
           SELECT id
-          FROM users
+          FROM public.users
           WHERE tenant_id = $1
             AND id = ANY($2::uuid[])
             AND deleted_at IS NULL
@@ -731,7 +731,7 @@ export const rbacService = {
       const userRes = await client.query(
         `
         SELECT id, tenant_id
-        FROM users
+        FROM public.users
         WHERE id = $1
           AND tenant_id = $2
           AND deleted_at IS NULL

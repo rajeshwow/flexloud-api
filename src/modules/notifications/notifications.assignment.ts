@@ -64,7 +64,7 @@ export async function enqueueQuoteAssignedNotification(params: {
     q.company_name AS db_company_name,
     q.quote_stage AS quote_stage_text
 
-  FROM users u
+  FROM public.users u
 
   LEFT JOIN users assigned_by_user
     ON assigned_by_user.tenant_id = u.tenant_id
@@ -379,7 +379,7 @@ export async function enqueueLeadAssignedNotification(params: {
       NULLIF(status_mv.value, '')
     ) AS lead_status_text
 
-  FROM users u
+  FROM public.users u
 
   LEFT JOIN users assigned_by_user
     ON assigned_by_user.tenant_id = u.tenant_id

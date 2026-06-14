@@ -967,7 +967,7 @@ export async function bootstrapTenant(req: Request, res: Response) {
     const existingAdminUserResult = await client.query(
       `
       SELECT id, tenant_id, name, email, role
-      FROM users
+      FROM public.users
       WHERE tenant_id = $1
         AND lower(email) = lower($2)
         AND deleted_at IS NULL

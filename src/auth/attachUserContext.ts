@@ -20,7 +20,7 @@ export async function attachUserContext(
     const { rows } = await pool.query(
       `
       SELECT id, tenant_id, role, is_active, email, name, username
-      FROM users
+      FROM public.users
       WHERE id = $1 AND tenant_id = $2
       LIMIT 1
       `,

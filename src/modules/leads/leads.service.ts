@@ -161,7 +161,7 @@ async function getUserNameById(
         ''
       ) AS full_name,
       email
-    FROM users
+    FROM public.users
     WHERE id = $1
       AND tenant_id = $2
     LIMIT 1

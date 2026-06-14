@@ -1011,7 +1011,7 @@ async function getDashboardUsers(tenantId: string) {
       id::text AS id,
       ${hasName ? "name" : "NULL"} AS name,
       ${hasEmail ? "email" : "NULL"} AS email
-    FROM users
+    FROM public.users
     WHERE tenant_id = $1
       ${hasDeletedAt ? "AND deleted_at IS NULL" : ""}
     ORDER BY ${hasName ? "name" : "created_at"} ASC

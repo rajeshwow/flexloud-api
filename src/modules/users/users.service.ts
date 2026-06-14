@@ -194,7 +194,7 @@ export const usersService = {
 
     const countQ = `
       SELECT COUNT(DISTINCT u.id)::int AS total
-      FROM users u
+      FROM public.users u
       LEFT JOIN user_roles ur
         ON ur.user_id = u.id
        AND ur.tenant_id = u.tenant_id
@@ -241,7 +241,7 @@ u.target_amount,
         u.created_at,
         u.updated_at,
         u.is_owner
-      FROM users u
+      FROM public.users u
       LEFT JOIN user_roles ur
         ON ur.user_id = u.id
        AND ur.tenant_id = u.tenant_id
@@ -327,7 +327,7 @@ u.target_amount,
         u.metadata,
         u.created_at,
         u.updated_at
-      FROM users u
+      FROM public.users u
       LEFT JOIN user_roles ur
         ON ur.user_id = u.id
        AND ur.tenant_id = u.tenant_id
@@ -586,7 +586,7 @@ u.target_amount,
       const existingUser = await client.query(
         `
         SELECT id
-        FROM users
+        FROM public.users
         WHERE id = $1 AND tenant_id = $2
         LIMIT 1
         `,
@@ -801,7 +801,7 @@ export const getMyTargetProgressHandler = async (
         )
     ), 0) AS achieved_amount
 
-  FROM users u
+  FROM public.users u
   WHERE u.tenant_id = $1
     AND u.id = $2
     AND u.deleted_at IS NULL
