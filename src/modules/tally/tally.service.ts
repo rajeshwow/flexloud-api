@@ -1427,14 +1427,18 @@ export async function pullTallyOutstandings(input: {
   FROM tally_outstandings
   WHERE tenant_id = $1
     AND tally_company_id = $6::uuid
-    AND COALESCE(NULLIF(ledger_guid, ''), 'NO_LEDGER_GUID')
-        = COALESCE(NULLIF($2, ''), 'NO_LEDGER_GUID')
-    AND lower(trim(COALESCE(ledger_name, '')))
-        = lower(trim(COALESCE($3, '')))
+    AND COALESCE(NULLIF(ledger_guid, ''), lower(trim(COALESCE(ledger_name, ''))))
+        = COALESCE(NULLIF($2, ''), lower(trim(COALESCE($3, ''))))
+    AND COALESCE(NULLIF(voucher_guid, ''), lower(trim(COALESCE(voucher_number, bill_ref, ''))))
+        = COALESCE(NULLIF($7, ''), lower(trim(COALESCE($5, $4, ''))))
     AND COALESCE(NULLIF(bill_ref, ''), 'NO_BILL_REF')
         = COALESCE(NULLIF($4, ''), 'NO_BILL_REF')
     AND COALESCE(NULLIF(voucher_number, ''), 'NO_VOUCHER_NUMBER')
         = COALESCE(NULLIF($5, ''), 'NO_VOUCHER_NUMBER')
+    AND COALESCE(voucher_date, '1900-01-01'::date)
+        = COALESCE($8::date, '1900-01-01'::date)
+    AND COALESCE(bill_type, 'receivable')
+        = COALESCE($9, 'receivable')
   LIMIT 1
   FOR UPDATE
   `,
@@ -1445,6 +1449,9 @@ export async function pullTallyOutstandings(input: {
             mapped.bill_ref,
             mapped.voucher_number,
             tallyCompany.id,
+            mapped.voucher_guid,
+            mapped.voucher_date,
+            mapped.bill_type,
           ],
         );
 
