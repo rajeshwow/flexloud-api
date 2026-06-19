@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { NextFunction, Request, Response } from "express";
 import { PoolClient } from "pg";
 import { z } from "zod";
+import { emitMyDayRefresh } from "../../common/socket";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 import { createActivityLog } from "../activity/activity.service";
@@ -887,6 +888,7 @@ export const leadsService = {
 
       const oldAssignedTo = normalizeForCompare(existingLead.assigned_to);
       const newAssignedTo = normalizeForCompare(updatedLead.assigned_to);
+      const assignedToChanged = oldAssignedTo !== newAssignedTo;
 
       if (newAssignedTo && oldAssignedTo !== newAssignedTo) {
         await enqueueLeadAssignedNotification({
@@ -905,6 +907,44 @@ export const leadsService = {
       }
 
       await client.query("COMMIT");
+
+      if (assignedToChanged) {
+        const leadTitle =
+          `${updatedLead.first_name ?? ""} ${updatedLead.last_name ?? ""}`.trim() ||
+          updatedLead.organization_name ||
+          updatedLead.lead_display_id ||
+          updatedLead.lead_number ||
+          "Lead";
+
+        if (oldAssignedTo) {
+          emitMyDayRefresh(
+            input.tenantId,
+            String(oldAssignedTo),
+            "lead_reassigned_from",
+            {
+              entity_type: "lead",
+              entity_id: updatedLead.id,
+              title: leadTitle,
+              lead_display_id: updatedLead.lead_display_id,
+            },
+          );
+        }
+
+        if (newAssignedTo) {
+          emitMyDayRefresh(
+            input.tenantId,
+            String(newAssignedTo),
+            "lead_assigned",
+            {
+              entity_type: "lead",
+              entity_id: updatedLead.id,
+              title: leadTitle,
+              lead_display_id: updatedLead.lead_display_id,
+            },
+          );
+        }
+      }
+
       return await getLeadByIdInternal(pool, input.tenantId, updatedLead.id);
     } catch (error) {
       await client.query("ROLLBACK");
@@ -958,6 +998,19 @@ export async function createLeadHandler(
         assignedBy: userId,
         isReassigned: false,
         sendInstantly: true,
+      });
+    }
+    if (lead.assigned_to) {
+      emitMyDayRefresh(tenantId, lead.assigned_to, "lead_assigned", {
+        entity_type: "lead",
+        entity_id: lead.id,
+        lead_display_id: lead.lead_display_id,
+        title:
+          `${lead.first_name ?? ""} ${lead.last_name ?? ""}`.trim() ||
+          lead.organization_name ||
+          lead.lead_display_id ||
+          lead.lead_number ||
+          "Lead",
       });
     }
 

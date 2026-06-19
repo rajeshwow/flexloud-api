@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextFunction, Request, Response } from "express";
+import { emitMyDayRefresh } from "../../common/socket";
 import { getTenantId } from "../../common/tenant";
 import { pool } from "../../db/pool";
 import { calculateTaskPerformance } from "./task-performance.service";
@@ -123,6 +124,18 @@ export async function createTaskHandler(
       description: "Task created",
       performedBy: userId,
     });
+
+    const createdTask = result.rows[0];
+
+    if (createdTask.assigned_to) {
+      emitMyDayRefresh(tenantId, createdTask.assigned_to, "task_assigned", {
+        entity_type: "task",
+        entity_id: createdTask.id,
+        title: createdTask.subject,
+        task_number: createdTask.task_number,
+        // lead_display_id: createdTask.lead_display_id,
+      });
+    }
 
     return res.status(201).json({
       message: "Task created successfully",
@@ -412,6 +425,8 @@ export async function updateTaskHandler(
 
     const existing = existingResult.rows[0];
 
+    const oldAssignedTo = existing.assigned_to;
+
     const nextStartDate = parsed.start_date ?? existing.start_date;
     const nextEndDate = parsed.end_date ?? existing.end_date;
 
@@ -444,7 +459,7 @@ export async function updateTaskHandler(
         AND tenant_id = $16
         AND deleted_at IS NULL
       RETURNING *;
-    `;
+    ` as any;
 
     const values = [
       parsed.subject ?? existing.subject,
@@ -480,11 +495,42 @@ export async function updateTaskHandler(
     ];
 
     const result = await pool.query(query, values);
+
+    if (!result.rows.length) {
+      return res.status(404).json({
+        message: "Task not found",
+        statusCode: 404,
+      });
+    }
+
+    const updatedTask = result.rows[0] as any;
+    const newAssignedTo = updatedTask.assigned_to;
+
     await calculateTaskPerformance(id, tenantId);
+
+    if (oldAssignedTo && oldAssignedTo !== newAssignedTo) {
+      emitMyDayRefresh(tenantId, oldAssignedTo, "task_reassigned_from", {
+        entity_type: "task",
+        entity_id: updatedTask.id,
+        title: updatedTask.subject,
+        task_number: updatedTask.task_number,
+        // lead_display_id: updatedTask.lead_display_id,
+      });
+    }
+
+    if (newAssignedTo) {
+      emitMyDayRefresh(tenantId, newAssignedTo, "task_updated", {
+        entity_type: "task",
+        entity_id: updatedTask.id,
+        title: updatedTask.subject,
+        task_number: updatedTask.task_number,
+        // lead_display_id: updatedTask.lead_display_id,
+      });
+    }
 
     return res.status(200).json({
       message: "Task updated successfully",
-      data: result.rows[0],
+      data: updatedTask,
       statusCode: 200,
     });
   } catch (error) {
