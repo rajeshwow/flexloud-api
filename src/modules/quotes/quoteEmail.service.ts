@@ -140,6 +140,35 @@ function buildQuotePdfHtml(quote: any) {
 
   const address = buildRegisteredAddress(quote);
 
+  const pdfSubTotal =
+    Number(quote.subtotal || 0) ||
+    (quote.items || []).reduce((sum: number, item: any) => {
+      const qty = Number(item.quantity || item.qty || 0);
+      const rate = Number(
+        item.sale_price || item.list_price || item.unit_price || item.rate || 0,
+      );
+      return sum + qty * rate;
+    }, 0);
+
+  const pdfDiscount = Number(quote.discount_amount || quote.discount || 0);
+
+  const pdfTaxAmount = Number(
+    quote.tax_amount ||
+      quote.tax_value ||
+      quote.tax_total ||
+      quote.tax ||
+      getItemsTaxTotal(quote.items),
+  );
+
+  const pdfTaxRate =
+    quote.tax_rate ||
+    quote.tax_percentage ||
+    quote.gst_rate ||
+    quote.gst_percentage ||
+    quote.items?.find((x: any) => x.tax_rate || x.tax)?.tax_rate ||
+    quote.items?.find((x: any) => x.tax_rate || x.tax)?.tax ||
+    "";
+
   const rows = (quote.items || [])
     .map((item: any, index: number) => {
       const productName =
@@ -154,13 +183,13 @@ function buildQuotePdfHtml(quote: any) {
       const qty = item.quantity || item.qty || 0;
       const rate =
         item.sale_price || item.list_price || item.unit_price || item.rate || 0;
-      const discount = item.discount_value || item.discount || 0;
-      const tax = item.tax_rate || item.tax || 0;
-      const total = item.line_total || item.total || 0;
+
+      const subTotal =
+        Number(item.sub_total || item.subtotal || item.line_subtotal || 0) ||
+        Number(qty || 0) * Number(rate || 0);
 
       return `
-      <tr>
-        <td>${index + 1}</td>
+       <tr>
         <td>
           <b>${safe(productName)}</b>
           ${item.part_number ? `<br/><small>Part No: ${safe(item.part_number)}</small>` : ""}
@@ -169,9 +198,7 @@ function buildQuotePdfHtml(quote: any) {
         </td>
         <td class="right">${safe(qty)}</td>
         <td class="right">${money(rate)}</td>
-        <td class="right">${safe(discount)}</td>
-        <td class="right">${safe(tax)}%</td>
-        <td class="right">${money(total)}</td>
+        <td class="right">${money(subTotal)}</td>
       </tr>
     `;
     })
@@ -350,8 +377,6 @@ function buildQuotePdfHtml(quote: any) {
           <th>Product</th>
           <th class="right">Qty</th>
           <th class="right">Rate</th>
-          <th class="right">Discount</th>
-          <th class="right">Tax</th>
           <th class="right">Total</th>
         </tr>
       </thead>
@@ -368,28 +393,27 @@ function buildQuotePdfHtml(quote: any) {
       </tbody>
     </table>
 
-    <div class="totals">
-      <div class="totals-row">
-        <span>Sub Total</span>
-        <b>${money(quote.subtotal)}</b>
-      </div>
-
-      <div class="totals-row">
-        <span>Discount</span>
-        <b>${money(quote.discount_amount || quote?.discount)}</b>
-      </div>
-
-      <div class="totals-row">
-        <span>Tax</span>
-    <b>${money(quote.tax || quote.tax_amount || getItemsTaxTotal(quote.items))}</b>
-      </div>
-
-      <div class="totals-row grand">
-        <span>Grand Total</span>
-        <span>${money(quote.grand_total || quote.total_amount || quote.amount)}</span>
-      </div>
-    </div>
+   <div class="totals">
+  <div class="totals-row">
+    <span>Sub Total</span>
+    <b>${money(pdfSubTotal)}</b>
   </div>
+
+  <div class="totals-row">
+    <span>Discount</span>
+    <b>${money(pdfDiscount)}</b>
+  </div>
+
+  <div class="totals-row">
+    <span>Tax ${pdfTaxRate ? `(${safe(pdfTaxRate)}%)` : ""}</span>
+    <b>${money(pdfTaxAmount)}</b>
+  </div>
+
+  <div class="totals-row grand">
+    <span>Grand Total</span>
+    <span>${money(quote.grand_total || quote.total_amount || quote.amount)}</span>
+  </div>
+</div>
 
   ${
     quote.terms_and_conditions || quote.terms
@@ -469,10 +493,11 @@ function getChromePath(): string {
 }
 
 async function generateQuotePdfBuffer(quote: any) {
+  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || getChromePath();
+
   const browser = await puppeteer.launch({
     headless: true,
-    executablePath:
-      process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+    ...(chromePath ? { executablePath: chromePath } : {}),
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
