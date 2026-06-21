@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { requirePermissions } from "../../common/requirePermissions";
+import { exportOrganizationsTable } from "../table-export/table-export.service";
 import {
   createOrganizationHandler,
   getOrganizationByIdHandler,
@@ -7,6 +9,12 @@ import {
 } from "./organizations.service";
 
 const organizationsRouter = Router();
+
+organizationsRouter.get(
+  "/export",
+  requirePermissions(["org.export"]),
+  exportOrganizationsTable,
+);
 
 organizationsRouter.post("/", createOrganizationHandler);
 organizationsRouter.get("/", getOrganizationsHandler);

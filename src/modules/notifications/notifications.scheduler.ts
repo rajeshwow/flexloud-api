@@ -810,7 +810,7 @@ async function insertSalesOrderAssignmentJobs() {
       '<p>Hello ' || COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''), u.name, u.email) || ',</p>' ||
       '<p>A sales order has been assigned to you.</p>' ||
       '<p><b>Sales Order:</b> ' || COALESCE(so.voucher_number, so.id::text) || '</p>' ||
-      '<p><b>Amount:</b> ' || COALESCE(so.grand_total::text, so.total_amount::text, '-') || '</p>',
+      '<p><b>Amount:</b> ' || COALESCE(so.total_amount::text, '-') || '</p>',
       'sales-order-assigned:' || so.tenant_id || ':' || so.id || ':' || so.assigned_to
     FROM sales_orders so
     JOIN users u

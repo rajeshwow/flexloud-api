@@ -133,22 +133,22 @@ export const initRealtime = (server: HttpServer) => {
     socket.join(`tenant:${tenantId}`);
     socket.join(`user:${tenantId}:${userId}`);
 
-    console.log("[Socket] connected", {
-      socketId: socket.id,
-      slug,
-      tenantId,
-      userId,
-    });
+    // console.log("[Socket] connected", {
+    //   socketId: socket.id,
+    //   slug,
+    //   tenantId,
+    //   userId,
+    // });
 
     socket.emit("realtime:ready", {
       ok: true,
     });
 
     socket.on("disconnect", (reason) => {
-      console.log("[Socket] disconnected", {
-        socketId: socket.id,
-        reason,
-      });
+      // console.log("[Socket] disconnected", {
+      //   socketId: socket.id,
+      //   reason,
+      // });
     });
   });
 
@@ -177,12 +177,12 @@ export const emitToUser = (
   const room = `user:${tenantId}:${userId}`;
   const roomSize = io.sockets.adapter.rooms.get(room)?.size || 0;
 
-  console.log("[Socket] emit", {
-    room,
-    roomSize,
-    eventName,
-    payload,
-  });
+  // console.log("[Socket] emit", {
+  //   room,
+  //   roomSize,
+  //   eventName,
+  //   payload,
+  // });
 
   io.to(room).emit(eventName, {
     ...(payload || {}),

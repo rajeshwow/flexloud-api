@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { requirePermissions } from "../../common/requirePermissions";
+import { exportQuotesTable } from "../table-export/table-export.service";
 import {
   previewQuotePdfHandler,
   sendQuoteEmailHandler,
@@ -11,6 +13,12 @@ import {
 } from "./quotes.service";
 
 const quotesRouter = Router();
+
+quotesRouter.get(
+  "/export",
+  requirePermissions(["quotes.export"]),
+  exportQuotesTable,
+);
 
 quotesRouter.post("/", createQuoteHandler);
 quotesRouter.get("/", getQuotesHandler);
